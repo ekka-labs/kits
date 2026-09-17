@@ -1,0 +1,28 @@
+#!/bin/sh
+# A stand-in for the ekka CLI, for rehearsing a kit without a server. It answers the way
+# ekka 0.1.87 answers on prod, with the same words, and keeps its little state in
+# $REHEARSAL_STATE. It is never installed for a person; CI uses it to run every kit end to end.
+# fake ekka for rehearsing the kit. State files: keyput (key stored), rowmade (row connected), signok (sign grant live)
+case "$1 $2" in
+  "--version ") echo "ekka 0.1.87" ;;
+  "whoami ") printf "\n  Signed in as steve@example.com, steves-org (owner).\n\n  This machine is enrolled\n" ;;
+  "secret list") { [ -f ${REHEARSAL_STATE:?}/keyput ] && echo "● SEPOLIA_WALLET_KEY  generic"; true; } ;;
+  "secret put") [ "$3" = --stdin ] && cat >/dev/null; touch ${REHEARSAL_STATE:?}/keyput; echo "✓ Stored secret SEPOLIA_WALLET_KEY" ;;
+  "api list") if [ -f ${REHEARSAL_STATE:?}/rowmade ]; then printf '  steves-org/eth-balance-sepolia  1.0.0  private  connected here\n'; else :; fi ;;
+  "api create") echo "✓ Added steves-org/eth-balance-sepolia@1.0.0"; echo "  1 operation, private to this organization." ;;
+  "api connect") touch ${REHEARSAL_STATE:?}/rowmade; echo "✓ Connected" ;;
+  "gate list") printf 'api/enclave969c26dcApi\nsecret/enclave969c26dcSecret\n' ;;
+  "agent create") echo "✓ Created agent" ;;
+  "plan template") printf '{\n  "plan": {\n    "code": "wallet.sign",\n    "name": "wallet.sign"\n  },\n  "definition": {}\n}\n' > "$3" ;;
+  "plan create") case "$3" in *balance*) echo "✓ Created ekka.wallet.balance@1.0.0";; *) echo "✓ Created ekka.wallet.sign@1.0.0";; esac ;;
+  "gate grant") case "$3" in
+      add) case "$*" in *secret*) touch ${REHEARSAL_STATE:?}/signok; echo "✓ Granted secret.vault.sign on enclave969c26dcSecret/keys/SEPOLIA_WALLET_KEY to agent wallet-agent"; echo "  Grant 5e5e5e5e-1111-2222-3333-444444444444: revoke with \`ekka gate grant revoke 5e5e5e5e-1111-2222-3333-444444444444\`";;
+                *) echo "✓ Granted api.read on enclave969c26dcApi/apis/steves-org/eth-balance-sepolia to agent wallet-agent"; echo "  Grant 1a2b3c4d-0000-0000-0000-000000000000: revoke with \`ekka gate grant revoke 1a2b3c4d-0000-0000-0000-000000000000\`";; esac ;;
+      revoke) rm -f ${REHEARSAL_STATE:?}/signok; echo "✓ Revoked grant $4" ;;
+      list) echo "1a2b3c4d  api.read enclave969c26dcApi/apis/steves-org/eth-balance-sepolia" ;; esac ;;
+  "plan run") case "$3" in
+      *balance*) echo "✓ Plan completed (run 7bdadd07-ec4a-423c-85b3-03849912992d)."; echo ""; echo "  Step 'call' produced no text. Its output is at ${REHEARSAL_STATE:?}/art/abc123/call.json"; echo "  Content hash: BvqolThtq4/LL5sNj/CQC3A4RJmHN5I3mPJhMEcY/x0="; echo ""; echo "  Verify the signed receipts: ekka receipts verify";;
+      *) if [ -f ${REHEARSAL_STATE:?}/signok ]; then echo "✓ Plan completed (run 9999)."; echo ""; echo "  Step 'call' produced no text. Its output is at ${REHEARSAL_STATE:?}/art/sig1/call.json"; echo "  Content hash: zzz"; else echo "✗ Plan failed (run 2ccf8294)." >&2; echo "  RESOURCE_GRANT_DENIED: no Grant covers tenant=4 agent=f secret resource=keys/SEPOLIA_WALLET_KEY (sign) on any live secret instance [enclave969c26dcSecret]. Run: ekka gate grant add --agent f --type secret --instance enclave969c26dcSecret --resource keys/SEPOLIA_WALLET_KEY --capability secret.vault.sign --no-fingerprint" >&2; exit 1; fi ;; esac ;;
+  "receipts verify") echo "✓ All 14 records check out." ;;
+  *) echo "fake ekka: $*" >&2; exit 1 ;;
+esac

@@ -1,0 +1,5 @@
+__pycache__/
+*/.demo-state
+*/wallet.balance.json
+*/wallet.sign.json
+.DS_Store
