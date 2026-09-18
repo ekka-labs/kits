@@ -1,6 +1,10 @@
 # Your wallet agent
 
-**An AI agent gets your test wallet's key. Watch what it can do, and what it cannot.**
+**An AI agent can request a wallet signature without ever seeing the private key. Watch what it is
+allowed to do, and what it is not.**
+
+The wallet key stays inside your Enclave. The agent submits a digest. If EKKA authorizes the
+request, the Enclave signs it and returns the signature.
 
 1. You allow one thing: read the balance. The agent reads it.
 2. The agent asks to sign. Refused before it reaches your machine.
