@@ -51,8 +51,12 @@ OUTF=$(mktemp); trap 'rm -f "$OUTF" "$OUTF.rc"' EXIT
 show_run() {
   say ""
   say "      ${D}──── running ─────────────────────────────────────────────────────────────${N}"
-  RC=0
-  { sh -c "$1" 2>&1; echo "$?" >"$OUTF.rc"; } | tee "$OUTF" | while IFS= read -r line; do
+  # The exit status crosses the pipe through a file. Under set -e a failing command would end the
+  # brace group before the status was written, and a stale file from the last run would read as 0:
+  # a grant that failed with a 503 was reported "Allowed" and the walk went on. So clear the file
+  # first, and write the status on both branches, where a failure is handled and set -e stays quiet.
+  RC=0; rm -f "$OUTF.rc"
+  { sh -c "$1" 2>&1 && echo 0 >"$OUTF.rc" || echo "$?" >"$OUTF.rc"; } | tee "$OUTF" | while IFS= read -r line; do
     case "$line" in
       "") say "" ;;
       ✓*) say "      ${G}$line${N}" ;;
@@ -69,8 +73,8 @@ show_run() {
 # going on to step 2 would show a refusal nobody can tell apart from a broken setup.
 stop_walk() {
   say ""
-  say "  ${R}✖ Stopped before step 2.${N} Step 1 has to succeed first, so that the refusal in step 2 means"
-  say "    what it says. Fix the reason above, then pick up again with:  ${C}./open.sh steps${N}"
+  say "  ${R}✖ The walkthrough has stopped before step 2.${N} Step 1 has to succeed first, so that the refusal"
+  say "    in step 2 means what it says. Fix the reason above, then pick up again with:  ${C}./open.sh steps${N}"
   say ""
   exit 1
 }
@@ -79,8 +83,11 @@ stop_walk() {
 explain_failure() {
   say "      ${R}The plan did not run.${N}"
   if grep -q "GOVERN_AUTH_REJECTED" "$OUTF"; then
-    say "      EKKA refused the Enclave itself, not the plan: the Enclave's sign-in with EKKA had lapsed."
-    say "      The Enclave signs in again on its own within a few seconds. Then:   ${C}./open.sh steps${N}"
+    say "      EKKA could not authenticate the Enclave. The action's permissions were not evaluated."
+    if grep -q "SESSION_LEASE_EXPIRED" "$OUTF"; then
+      say "      The reason: the Enclave's session with EKKA had expired. The Enclave opens a new one on"
+      say "      its own; the Enclave window shows runnerSessionReauthenticated when it has."
+    fi
   elif grep -q "session expired" "$OUTF"; then
     say "      Your sign-in on this machine expired (it renews itself; this time it could not). Sign in"
     say "      again, then come back:   ${C}ekka login --email <your email>${N}   then   ${C}./open.sh steps${N}"
@@ -93,7 +100,6 @@ explain_failure() {
   else
     say "      The red line above names the reason. Fix it, then run the steps again:  ${C}./open.sh steps${N}"
   fi
-  say "      ${D}The attempt is on a signed record like everything else: ekka receipts list${N}"
 }
 
 # A grant, one field per line, each one explained. What runs is the one-line form; this is the reading form.
@@ -270,8 +276,13 @@ if step "2. The agent asks the Enclave to sign. Nobody has allowed this." \
     say "      Notice it prints the exact grant line an admin would need. The agent can read that line;"
     say "      it cannot run it. Only your signed-in session can grant."
   else
-    say "      ${R}Unexpected.${N} This should have been refused with RESOURCE_GRANT_DENIED. Check:"
-    cmd "ekka gate grant list"
+    say "      ${R}Unexpected.${N} This should have been refused with RESOURCE_GRANT_DENIED, and was not. A"
+    say "      refusal for any other reason is not the governance decision this step demonstrates."
+    explain_failure
+    say ""
+    say "  ${R}✖ The walkthrough has stopped before step 3.${N} Fix the reason above, then:  ${C}./open.sh steps${N}"
+    say ""
+    exit 1
   fi
   learn "$DOCS/security/#how-does-ekka-stop-an-agent-before-it-acts"
 fi
@@ -380,6 +391,13 @@ else
   show_run "$RERUN"
   if grep -q RESOURCE_GRANT_DENIED "$OUTF"; then
     say "      ${B}Refused again.${N} The permission was a switch, and you own it."
+  else
+    say "      ${R}Unexpected.${N} After the revoke this should have been refused with RESOURCE_GRANT_DENIED."
+    explain_failure
+    say ""
+    say "  ${R}✖ The walkthrough has stopped.${N} The last refusal was not the one this step demonstrates."
+    say ""
+    exit 1
   fi
   say ""
   say "      Last thing. ${B}Turn wifi off now.${N} Every step you just took, allowed or refused, left a"

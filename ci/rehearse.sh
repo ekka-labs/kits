@@ -21,11 +21,18 @@ for must in "Plan completed" "balance  1.234500 ETH" "RESOURCE_GRANT_DENIED" "Re
   if grep -q "$must" "$WORK/out.txt"; then echo "  ok   saw: $must"; else echo "  MISSING: $must"; rc=1; fi
 done
 for m in steps try why commands; do printf 's\ns\n\n\n\n\n\n\n' > "$WORK/s"; ROLL=0 NO_COLOR=1 OPEN_SH_INPUT="$WORK/s" PATH="$WORK/bin:$PATH" sh ./open.sh $m >/dev/null 2>&1 && echo "  ok   ./open.sh $m" || { echo "  FAIL ./open.sh $m"; rc=1; }; done
-# When step 1 fails, the walk must stop before step 2, say why, and exit non-zero.
-printf 'y\n0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\ns\n\n\n\n' > "$WORK/fail"
-mkdir -p "$WORK/state-fail"   # a fresh Enclave: no key stored yet, so the answers file is read the same way as a first run
-if REHEARSAL_STATE="$WORK/state-fail" REHEARSAL_STEP1_FAILS=1 ROLL=0 NO_COLOR=1 OPEN_SH_INPUT="$WORK/fail" PATH="$WORK/bin:$PATH" sh ./open.sh > "$WORK/fail.txt" 2>&1; then echo "  FAIL step 1 failed but open.sh exited zero"; rc=1; else echo "  ok   step 1 failure exits non-zero"; fi
-grep -q "Stopped before step 2" "$WORK/fail.txt" && echo "  ok   saw: Stopped before step 2" || { echo "  MISSING: Stopped before step 2"; rc=1; }
-grep -q "the Enclave's sign-in with EKKA had lapsed" "$WORK/fail.txt" && echo "  ok   saw: the lapsed sign-in explained" || { echo "  MISSING: lapsed sign-in explanation"; rc=1; }
-grep -q "▶ 2\." "$WORK/fail.txt" && { echo "  FAIL step 2 ran after step 1 failed"; rc=1; } || echo "  ok   step 2 did not run"
+# Three injected failures. Each gets a fresh state dir (a first run, so the answers are read the same way)
+# and a call log, so the checks are about what the kit did NOT run afterwards, not about a heading.
+ANSWERS='y\n0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\ns\n\n\n\n\n\n'
+inject() { # name  env-var  must-see  must-not-have-run
+  mkdir -p "$WORK/$1"; printf "$ANSWERS" > "$WORK/$1.in"
+  if env "$2=1" REHEARSAL_STATE="$WORK/$1" ROLL=0 NO_COLOR=1 OPEN_SH_INPUT="$WORK/$1.in" PATH="$WORK/bin:$PATH" sh ./open.sh > "$WORK/$1.txt" 2>&1; then echo "  FAIL $1: open.sh exited zero"; rc=1; else echo "  ok   $1: exits non-zero"; fi
+  grep -q "$3" "$WORK/$1.txt" && echo "  ok   $1: saw: $3" || { echo "  MISSING $1: $3"; rc=1; }
+  grep -q "The walkthrough has stopped" "$WORK/$1.txt" && echo "  ok   $1: the walk said it stopped" || { echo "  MISSING $1: the stop line"; rc=1; }
+  if grep -qE "$4" "$WORK/$1/calls.log" 2>/dev/null; then echo "  FAIL $1: ran afterwards: $(grep -E "$4" "$WORK/$1/calls.log" | head -1)"; rc=1; else echo "  ok   $1: never ran: $4"; fi
+}
+inject grant-fails   REHEARSAL_GRANT_FAILS      "The grant was not created"                     "^plan run"
+inject balance-fails REHEARSAL_STEP1_FAILS      "EKKA could not authenticate the Enclave"       "^plan run ekka.wallet.sign|^gate grant add .*secret"
+inject step2-auth    REHEARSAL_STEP2_AUTH_FAILS "not the governance decision this step demonstrates" "^gate grant add .*secret"
+grep -q "sign-in with EKKA had lapsed\|within a few seconds" "$WORK/balance-fails.txt" && { echo "  FAIL balance-fails: unsupported explanation printed"; rc=1; } || echo "  ok   balance-fails: no unsupported explanation"
 exit $rc
