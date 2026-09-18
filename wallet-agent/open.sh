@@ -405,7 +405,10 @@ else
   cmd "ekka receipts verify"
   wait_enter "Wifi off? Enter runs it."
   show_run "ekka receipts verify"
-  if [ "$RC" = 0 ]; then
+  if grep -qi "chain empty" "$OUTF"; then
+    say "      ${B}Nothing to verify yet.${N} Records are written on this machine when a plan actually runs here."
+    say "      No plan has, so the chain is empty. Once step 1 has run, this command has something to check."
+  elif [ "$RC" = 0 ]; then
     say "      ${B}What happened:${N} each record is signed and points at the one before it. The ones signed by"
     say "      this machine's Enclave are the steps that ran here; the rest were signed by EKKA's server,"
     say "      the refusals among them. Change one, delete one, add one: the check fails. Wifi back on."
@@ -433,6 +436,11 @@ fi
 
 # ---------------------------------------------------------------- checks before anything is touched
 command -v "$EKKA" >/dev/null 2>&1 || stop "EKKA is not installed." "Install it with the line in your email, then: ekka login --email you@example.com"
+# curl and python3 read the balance website, print the balance from a run, and pull the signature out of
+# a run's output. Without them the kit used to say the website was unreachable when the box simply had
+# no python3, which sent a person looking at the network instead of at the box.
+MISSING=""; for tool in curl python3; do command -v "$tool" >/dev/null 2>&1 || MISSING="$MISSING $tool"; done
+[ -z "$MISSING" ] || stop "This machine is missing:$MISSING." "The kit reads the balance website and a run's output with them. On Debian or Ubuntu: apt-get install -y curl python3"
 # This kit version needs a runner that has the secret gate's sign op (0.1.87).
 FLOOR=0.1.87; KIT_VERSION=$(cat "$HERE/VERSION" 2>/dev/null || echo dev)
 HAVE=$(run --version 2>/dev/null | awk 'NR==1{print $2}')
