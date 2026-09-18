@@ -1,5 +1,7 @@
 # EKKA Kits
 
+**A governed AI agent in a box.**
+
 A kit is a folder you run inside your own EKKA organization. It sets up one real AI agent for one
 real use, runs a few steps in front of you, explains each one, and leaves the agent yours to extend.
 

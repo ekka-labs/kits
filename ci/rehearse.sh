@@ -21,4 +21,11 @@ for must in "Plan completed" "balance  1.234500 ETH" "RESOURCE_GRANT_DENIED" "Re
   if grep -q "$must" "$WORK/out.txt"; then echo "  ok   saw: $must"; else echo "  MISSING: $must"; rc=1; fi
 done
 for m in steps try why commands; do printf 's\ns\n\n\n\n\n\n\n' > "$WORK/s"; ROLL=0 NO_COLOR=1 OPEN_SH_INPUT="$WORK/s" PATH="$WORK/bin:$PATH" sh ./open.sh $m >/dev/null 2>&1 && echo "  ok   ./open.sh $m" || { echo "  FAIL ./open.sh $m"; rc=1; }; done
+# When step 1 fails, the walk must stop before step 2, say why, and exit non-zero.
+printf 'y\n0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80\n0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\ns\n\n\n\n' > "$WORK/fail"
+mkdir -p "$WORK/state-fail"   # a fresh Enclave: no key stored yet, so the answers file is read the same way as a first run
+if REHEARSAL_STATE="$WORK/state-fail" REHEARSAL_STEP1_FAILS=1 ROLL=0 NO_COLOR=1 OPEN_SH_INPUT="$WORK/fail" PATH="$WORK/bin:$PATH" sh ./open.sh > "$WORK/fail.txt" 2>&1; then echo "  FAIL step 1 failed but open.sh exited zero"; rc=1; else echo "  ok   step 1 failure exits non-zero"; fi
+grep -q "Stopped before step 2" "$WORK/fail.txt" && echo "  ok   saw: Stopped before step 2" || { echo "  MISSING: Stopped before step 2"; rc=1; }
+grep -q "the Enclave's sign-in with EKKA had lapsed" "$WORK/fail.txt" && echo "  ok   saw: the lapsed sign-in explained" || { echo "  MISSING: lapsed sign-in explanation"; rc=1; }
+grep -q "▶ 2\." "$WORK/fail.txt" && { echo "  FAIL step 2 ran after step 1 failed"; rc=1; } || echo "  ok   step 2 did not run"
 exit $rc

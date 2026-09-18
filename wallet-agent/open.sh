@@ -65,10 +65,23 @@ show_run() {
   say ""
 }
 
+# Step 1 is the first thing a person watches succeed. If it does not, the walkthrough stops here:
+# going on to step 2 would show a refusal nobody can tell apart from a broken setup.
+stop_walk() {
+  say ""
+  say "  ${R}✖ Stopped before step 2.${N} Step 1 has to succeed first, so that the refusal in step 2 means"
+  say "    what it says. Fix the reason above, then pick up again with:  ${C}./open.sh steps${N}"
+  say ""
+  exit 1
+}
+
 # When a run did not complete, say the next thing to do in plain words.
 explain_failure() {
   say "      ${R}The plan did not run.${N}"
-  if grep -q "session expired" "$OUTF"; then
+  if grep -q "GOVERN_AUTH_REJECTED" "$OUTF"; then
+    say "      EKKA refused the Enclave itself, not the plan: the Enclave's sign-in with EKKA had lapsed."
+    say "      The Enclave signs in again on its own within a few seconds. Then:   ${C}./open.sh steps${N}"
+  elif grep -q "session expired" "$OUTF"; then
     say "      Your sign-in on this machine expired (it renews itself; this time it could not). Sign in"
     say "      again, then come back:   ${C}ekka login --email <your email>${N}   then   ${C}./open.sh steps${N}"
   elif grep -q "credit_exhausted" "$OUTF"; then
@@ -218,6 +231,10 @@ read -r REPLY <&3 || REPLY=q; printf "\r%60s\r" ""
 case "$REPLY" in q|Q) say ""; say "  Stopped. Pick up again with: ./open.sh steps"; say ""; exit 0 ;; esac
 if [ "$REPLY" != s ] && [ "$REPLY" != S ]; then
   show_run "$BAL_GRANT"
+  if [ "$RC" != 0 ]; then
+    say "      ${R}The grant was not created.${N} The red line above names the reason."
+    stop_walk
+  fi
   say "      ${B}Allowed.${N} One row on EKKA's server. When ${B}$AGENT${N} asks for this one thing the"
   say "      answer is yes; for anything else it is still no."
   say ""
@@ -236,6 +253,7 @@ if [ "$REPLY" != s ] && [ "$REPLY" != S ]; then
     say "      ${D}fingerprint of the answer (the Content hash line). The number itself stayed here.${N}"
   else
     explain_failure
+    stop_walk
   fi
   learn "$DOCS/how-governance-works/#what-happens-when-an-agent-acts"
 fi
