@@ -1,0 +1,5 @@
+# Each sub-command of open.sh that must still run. One per line.
+steps
+try
+why
+commands

@@ -1,0 +1,2 @@
+# kit name      folder (relative to this file)      minimum runner
+wallet-agent        wallet-agent                        0.1.87

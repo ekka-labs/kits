@@ -1,0 +1,24 @@
+{
+  "name": "ekka/eth-balance-sepolia",
+  "title": "Ethereum balance on the Sepolia test network, read only",
+  "base_url": "https://eth-sepolia.blockscout.com",
+  "auth": {
+    "kind": "bearer"
+  },
+  "credential_format": "This endpoint is public and ignores the token. Any non-empty string works. EKKA cannot connect an API with no credential today.",
+  "operations": [
+    {
+      "call": "balance",
+      "title": "Read the balance of one Sepolia address",
+      "verb": "read",
+      "method": "GET",
+      "path": "/api/v2/addresses/@call.address",
+      "inputs": {
+        "address": {
+          "description": "The Ethereum address to read, as 0x followed by 40 hex characters.",
+          "required": true
+        }
+      }
+    }
+  ]
+}

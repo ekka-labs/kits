@@ -1,0 +1,55 @@
+#!/bin/sh
+# A stand-in for the ekka CLI, for rehearsing THIS kit without a server. It answers the way
+# ekka answers on prod, with the same words, and keeps its little state in $REHEARSAL_STATE.
+# It is never installed for a person; CI uses it to run the kit end to end.
+#
+# ⛔ ONE STAND-IN PER KIT, AND THE DUPLICATION IS THE FEATURE. There used to be a single shared
+# stand-in with a branch per kit name, and that is how another kit's API vendor, agent name and
+# plan names travelled into a public release of THIS kit. `whoami`, `gate grant add` and
+# `receipts verify` will look nearly identical in every kit's copy. Leave them. A stand-in that
+# stands in for a different API is a different program that happens to rhyme, and factoring the
+# rhyme back out is the exact change that leaked.
+S=${REHEARSAL_STATE:?}
+[ -n "${REHEARSAL_STATE:-}" ] && printf '%s\n' "$*" >> "$S/calls.log"
+
+# The kit's own floor is what it checks, so it is answered at or above that floor.
+VERSION=0.1.87
+
+case "$1 $2" in
+  "--version ") echo "ekka $VERSION" ;;
+  "whoami ") printf "\n  Signed in as you@example.com, example-org (owner).\n\n  This machine is enrolled\n" ;;
+  "secret list") { [ -f "$S/keyput" ] && echo "● SEPOLIA_WALLET_KEY  generic"; true; } ;;
+  "secret put") [ "$3" = --stdin ] && cat >/dev/null; touch "$S/keyput"; echo "✓ Stored secret SEPOLIA_WALLET_KEY" ;;
+  "api list") { [ -f "$S/rowmade" ] && printf '  example-org/eth-balance-sepolia  1.0.0  private  connected here\n'; true; } ;;
+  "api create") echo "✓ Added example-org/eth-balance-sepolia@1.0.0"; echo "  1 operation, private to this organization." ;;
+  "api connect") cat >/dev/null 2>&1 || true; touch "$S/rowmade"; echo "✓ Connected" ;;
+  "gate list") printf 'api/enclave969c26dcApi\nsecret/enclave969c26dcSecret\n' ;;
+  "agent create") echo "✓ Created agent" ;;
+  "plan template") printf '{\n  "plan": {\n    "code": "wallet.sign",\n    "name": "wallet.sign"\n  },\n  "definition": {}\n}\n' > "$3" ;;
+  "plan create")
+     case "$3" in
+       *balance*) echo "✓ Created ekka.wallet.balance@1.0.0" ;;
+       *)         echo "✓ Created ekka.wallet.sign@1.0.0" ;;
+     esac ;;
+  "gate grant") case "$3" in
+      add) case "$*" in
+             *api.read*)  if [ -n "${REHEARSAL_GRANT_FAILS:-}" ]; then echo "ekka gate grant add: GOVERN_HTTP_ERROR (503)" >&2; exit 1; fi
+                echo "✓ Granted api.read on enclave969c26dcApi/apis/example-org/eth-balance-sepolia to agent wallet-agent"
+                echo "  Grant 1a2b3c4d-0000-0000-0000-000000000000: revoke with \`ekka gate grant revoke 1a2b3c4d-0000-0000-0000-000000000000\`" ;;
+             *secret*) touch "$S/signok"; echo "✓ Granted secret.vault.sign on enclave969c26dcSecret/keys/SEPOLIA_WALLET_KEY to agent wallet-agent"
+                echo "  Grant 5e5e5e5e-1111-2222-3333-444444444444: revoke with \`ekka gate grant revoke 5e5e5e5e-1111-2222-3333-444444444444\`" ;;
+             *) echo "✓ Granted api.read on enclave969c26dcApi/apis/example-org/eth-balance-sepolia to agent wallet-agent"
+                echo "  Grant 1a2b3c4d-0000-0000-0000-000000000000: revoke with \`ekka gate grant revoke 1a2b3c4d-0000-0000-0000-000000000000\`" ;;
+           esac ;;
+      revoke) rm -f "$S/signok"; echo "✓ Revoked grant $4" ;;
+      list) echo "1a2b3c4d  api.read enclave969c26dcApi/apis/example-org/eth-balance-sepolia" ;;
+    esac ;;
+  "plan run") case "$3" in
+      *balance*) if [ -n "${REHEARSAL_STEP1_FAILS:-}" ]; then echo "→ Dispatching plan \`ekka.wallet.balance@1.0.0\` through your Enclave..."; echo "ekka plan: the Enclave refused the request (-32001): govern dispatch failed: GOVERN_AUTH_REJECTED ()" >&2; exit 1; fi
+                 echo "✓ Plan completed (run 7bdadd07-ec4a-423c-85b3-03849912992d)."; echo ""; echo "  Step 'call' produced no text. Its output is at ${S}/art/abc123/call.json"; echo "  Content hash: BvqolThtq4/LL5r9Nt2wLSyKk0wQWuQGB+9aJ0dPZ2g=" ;;
+      *) if [ -n "${REHEARSAL_STEP2_AUTH_FAILS:-}" ]; then echo "ekka plan: the Enclave refused the request (-32001): govern dispatch failed: GOVERN_AUTH_REJECTED ()" >&2; exit 1; fi
+         if [ -f "$S/signok" ]; then echo "✓ Plan completed (run 9999)."; echo ""; echo "  Step 'call' produced no text. Its output is at ${S}/art/sig1/call.json"; echo "  Content hash: zzz"; else echo "ekka plan: the Enclave refused the request (-32001): govern dispatch failed: RESOURCE_GRANT_DENIED (no Grant covers keys/SEPOLIA_WALLET_KEY (sign))" >&2; exit 1; fi ;;
+    esac ;;
+  "receipts verify") echo "✓ All 14 records check out." ;;
+  *) echo "fake ekka: $*" >&2; exit 1 ;;
+esac

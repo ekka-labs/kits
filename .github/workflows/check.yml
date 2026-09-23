@@ -1,0 +1,51 @@
+name: check
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '17 6 * * *'   # daily: a runner release can break a kit without touching this repo
+  workflow_dispatch:
+jobs:
+  kits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Every commit here is EKKA's
+        run: |
+          set -e
+          bad=$(git log --format='%an%n%cn' | sort -u | grep -vE '^(EKKA|ekka-ops\[bot\])$' || true)
+          if [ -n "$bad" ]; then echo "a public repo speaks as EKKA; found: $bad"; exit 1; fi
+          echo ok
+      - name: Nothing here names a person or a company
+        # The step above checks the author NAME. This checks the ADDRESS: every
+        # address in every file, and both across every branch, because a branch
+        # that never merged still publishes what it carries.
+        run: bash ci/nothing-here-names-a-person-or-a-company.sh
+
+      - name: No secrets, ever
+        # The gitleaks CLI, not the GitHub action: the action wants a paid license for organizations.
+        run: docker run --rm -v "$PWD":/repo zricethezav/gitleaks:v8.30.1 detect --source /repo --no-banner --redact
+      - name: Every kit script parses under bash and dash
+        run: |
+          set -e
+          for k in $(grep -vE '^#|^\s*$' kits.txt | awk '{print $2}'); do
+            bash -n "$k/open.sh"; dash -n "$k/open.sh"; echo "ok  $k/open.sh"
+          done
+      - name: Nothing a person reads says mainnet or demo
+        run: |
+          set -e
+          for k in $(grep -vE '^#|^\s*$' kits.txt | awk '{print $2}'); do
+            if grep -rniE "mainnet|\bdemo\b" --include=open.sh --include=README.md --include=sign.html "$k" | grep -viE "Dockerfile|ekka-demo|/demo|\.demo-state"; then
+              echo "found a word the kit rules forbid in $k"; exit 1; fi
+          done
+          echo ok
+      - name: Every kit's codes are on the ekka edition, floor matches
+        run: |
+          set -e
+          for k in $(grep -vE '^#|^\s*$' kits.txt | awk '{print $1}'); do ci/check-kit.sh "$k"; done
+      - name: Every kit runs end to end against the stand-in ekka
+        run: |
+          set -e
+          for k in $(grep -vE '^#|^\s*$' kits.txt | awk '{print $1}'); do ci/rehearse.sh "$k"; done

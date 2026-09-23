@@ -1,0 +1,9 @@
+# One screen this kit MUST print, per line. A shared list would pass a kit that
+# printed somebody else's walkthrough, which is the one failure a rehearsal exists
+# to catch. Lines starting with # are comments.
+Plan completed
+balance  1.234500 ETH
+RESOURCE_GRANT_DENIED
+Refused again
+records check out
+nobody wrote code

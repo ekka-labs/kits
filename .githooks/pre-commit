@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Refuse a commit that would publish an outside identity or address to this
+# PUBLIC repository.
+#
+# ⛔ AN ALLOW LIST, NOT A DENY LIST. Listing the names we want to hide would
+# publish them here, and would still miss the first name nobody thought of. This
+# asks which addresses a public EKKA repo may contain and refuses the rest.
+#
+# The identity check matters most: git fills the author line from config, and a
+# fresh clone inherits the machine's global one.
+#
+# Enable once per clone:   git config core.hooksPath .githooks
+set -euo pipefail
+ALLOWED='(@(example\.(com|net|org)|ekka\.ai|users\.noreply\.github\.com)$|^noreply@github\.com$)'
+
+WHO="$(git var GIT_AUTHOR_IDENT 2>/dev/null | sed -E 's/.*<(.*)>.*/\1/' || true)"
+if ! printf '%s' "$WHO" | grep -qiE "$ALLOWED"; then
+  echo "refusing: this commit would be authored as <$WHO>" >&2
+  echo "  this repository is public. Set the bot identity for this clone:" >&2
+  echo "    git config user.name  \"EKKA\"" >&2
+  echo "    git config user.email \"<the ekka-ops bot>@users.noreply.github.com\"" >&2
+  exit 1
+fi
+
+STAGED="$(git diff --cached --name-only --diff-filter=ACM)"
+[ -z "$STAGED" ] && exit 0
+BAD=$(printf '%s\n' "$STAGED" | while IFS= read -r f; do
+        # The hook and the CI check both have to spell out what they allow.
+        if [ "${f#.githooks/}" != "$f" ]; then continue; fi
+        if [ "$f" = "ci/nothing-here-names-a-person-or-a-company.sh" ]; then continue; fi
+        git show ":$f" 2>/dev/null \
+          | grep -hoiE '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}' \
+          | grep -viE "$ALLOWED" | sed "s|^|$f: |"
+      done)
+if [ -n "$BAD" ]; then
+  echo "refusing: a staged file carries an address that is not ours and not reserved:" >&2
+  printf '%s\n' "$BAD" | head -8 >&2
+  echo "  use an @example.com address: RFC 2606 reserves it so it cannot be anybody's." >&2
+  exit 1
+fi
+exit 0

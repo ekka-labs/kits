@@ -1,0 +1,43 @@
+# Rehearse the wallet kit the way a stranger meets it: a clean box
+# with nothing on it. Nothing from your Mac leaks in, so if it works here it
+# works for them.
+#
+#   docker build -f Dockerfile.rehearsal -t ekka-kitbox .
+#   docker run -it --name kitbox -v "$PWD":/kit ekka-kitbox bash    # window 1: the Enclave (run from this folder)
+#   docker exec -it -u person kitbox bash                            # window 2: you
+#   docker exec -it -u agent kitbox bash                           # window 3: the agent
+#
+# The install link carries your access key, so it is typed inside the running
+# box, never baked into the image.
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl python3 less vim procps grep \
+    && rm -rf /var/lib/apt/lists/*
+
+# A non-root user, because the person running this kit will not be root either.
+# Two users, on purpose. `person` is the human: signed in, owns ~/.ekka and the
+# admin session inside it. `agent` is the one you point an AI at: a shell, but
+# not the person's shell. It cannot read the person's session, so it cannot grant itself
+# anything, and it cannot read the vault. The agent is never the admin.
+RUN useradd -m -s /bin/bash person && useradd -m -s /bin/bash agent
+USER person
+WORKDIR /home/person
+ENV PATH="/home/person/.local/bin:${PATH}"
+
+# Leave the install to run time so the token never enters an image layer.
+# Inside the container, run:
+#
+#   curl -fsSL -H "X-Ekka-Key: <key>" https://get.ekka.ai/install.sh | sh
+#   export PATH="$HOME/.local/bin:$PATH"
+#   ekka --version                 # must be 0.1.87 or later
+#   ekka login --email you@example.com
+#   ekka org create <slug>
+#   ekka enclave create --name "wallet agent"
+#   ekka enclave start <id>        # leave running, open a second shell
+#
+# then in the second shell (window 2):
+#   cd /kit && ENCLAVE=<id> ./open.sh
+
+CMD ["/bin/bash"]
