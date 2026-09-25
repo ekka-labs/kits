@@ -164,6 +164,11 @@ explain_failure() {
   elif grep -q "credit_exhausted" "$OUTF"; then
     say "      Your organization has no EKKA credit yet. Reply to the email you were sent and name"
     say "      your organization (${B}$ORG${N}); it is one command on our side. Then ${C}./open.sh steps${N}"
+  elif grep -q "USAGE_CEILING_EXCEEDED" "$OUTF"; then
+    # Measured on prod 2026-09-25: a daily run limit answers HTTP 429 as GOVERN_HTTP_ERROR, and was
+    # told as "EKKA did not answer clearly", which sends a person to wait for an outage (#41).
+    say "      Your organization has used all of today's EKKA runs (its daily limit). Nothing was changed."
+    say "      It resets at the start of the next day (UTC), or an admin raises it:  ${C}$EK org limits set${N}"
   elif grep -qE "GOVERN_HTTP_ERROR|50[234]" "$OUTF"; then
     say "      EKKA did not answer clearly. Inspect the saved attempt before trying another write:"
     cmd "./open.sh steps"
@@ -428,7 +433,10 @@ create_plan() {  # file code -> sets V
   if ! printf '%s\n' "$OUT" | grep -qE "✓|already"; then
     spin_stop
     printf '%s\n' "$OUT" > "$OUTF"; show_failure
-    if grep -qiE "unreachable|timed out|connect|dns|resolve|52[0-9]|50[234]|GOVERN_HTTP_ERROR" "$OUTF"; then
+    if grep -q "USAGE_CEILING_EXCEEDED" "$OUTF"; then
+      say "      Your organization has used all of today's EKKA runs (its daily limit). Nothing was changed."
+      say "      It resets at the start of the next day (UTC), or an admin raises it:  ${C}$EK org limits set${N}"
+    elif grep -qiE "unreachable|timed out|connect|dns|resolve|52[0-9]|50[234]|GOVERN_HTTP_ERROR" "$OUTF"; then
       say "      ${R}EKKA is not answering right now,${N} so the plan '$2' could not be saved. Nothing else"
       say "      was changed. Try again in a few minutes:  ${C}./open.sh${N}"
     else

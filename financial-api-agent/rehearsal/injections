@@ -3,3 +3,4 @@ grant-fails	REHEARSAL_GRANT_FAILS	The grant was not created	^plan run|api.write
 read-fails	REHEARSAL_STEP1_FAILS	EKKA could not authenticate the Enclave	^plan run .*trade\.(decide|execute)|api\.write	
 no-verdict	REHEARSAL_NO_VERDICT	not the model's	^plan run .*trade\.execute|api\.write	AAPL or SPY
 ekka-goes-away	REHEARSAL_EKKA_GOES_AWAY	EKKA is not answering right now	^plan run	
+daily-limit	REHEARSAL_DAILY_LIMIT	used all of today's EKKA runs	^plan run .*trade\.(decide|execute)	not answering|did not answer clearly
