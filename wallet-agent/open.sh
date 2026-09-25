@@ -541,7 +541,11 @@ wait_enter "Enter sends the payment."
 busy "The Enclave is asked to sign" "$AGAIN_CMD"
 if refused_by_ekka; then
   ok "EKKA stopped it. The permission is yours to give, and yours to take back."
-  say "      ${B}See it yourself:${N} only the one payment from step 2 is on your wallet's page:"
+  # ⛔ SAY ONLY WHAT THE PAGE WILL SHOW (ekka-ai/ekka-kits#45). A wallet that has been paid
+  # or has paid before lists every one of those payments, so "only the one" was false for
+  # anyone but a brand-new wallet. What the kit can prove: the newest is still step 2's.
+  say "      ${B}See it yourself:${N} the newest payment on your wallet's page is still the one from step 2"
+  say "      (its hash begins $(printf '%s' "$TX_HASH" | cut -c1-12)). Nothing new was sent:"
   say "      ${C}$EXPLORER/address/$ADDRESS${N}"
 elif plan_completed; then
   say "      ${R}THE ENCLAVE SIGNED AFTER YOU TOOK THE PERMISSION BACK.${N} That must never happen."
