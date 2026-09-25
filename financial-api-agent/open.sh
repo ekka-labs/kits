@@ -285,8 +285,8 @@ build_prompt() {
 import json, sys
 i = json.load(open(sys.argv[1]))
 print("  \u2714 Got the last 5 days of prices from Alpaca.")
-print(f"      Apple      {i['aapl_close_from']} \u2192 {i['aapl_close_to']}   {i['aapl_return_pct']:+.2f}%")
-print(f"      S&P 500    {i['spy_close_from']} \u2192 {i['spy_close_to']}   {i['spy_return_pct']:+.2f}%")
+print(f"      Apple      {i['aapl_close_from']:.2f} \u2192 {i['aapl_close_to']:.2f}   {i['aapl_return_pct']:+.2f}%")
+print(f"      S&P 500    {i['spy_close_from']:.2f} \u2192 {i['spy_close_to']:.2f}   {i['spy_return_pct']:+.2f}%")
 gap = i['spread_pts']
 side = "ahead of" if gap > 0 else "behind"
 print(f"      Apple is {abs(gap):.2f} points {side} the S&P 500. Worked out here, on your computer, not by the AI.")

@@ -50,6 +50,6 @@ out["as_of"] = out["aapl_to"]
 out["spread_pts"] = round(out["aapl_return_pct"] - out["spy_return_pct"], 2)
 json.dump(out, open(sys.argv[2], "w"), indent=1)
 print(f"window        {DAYS} trading days, {out['aapl_from'][:10]} close to {out['aapl_to'][:10]} close (IEX feed, adjusted)")
-print(f"AAPL          {out['aapl_close_from']} -> {out['aapl_close_to']}   {out['aapl_return_pct']:+.2f}%")
-print(f"SPY           {out['spy_close_from']} -> {out['spy_close_to']}   {out['spy_return_pct']:+.2f}%")
+print(f"AAPL          {out['aapl_close_from']:.2f} -> {out['aapl_close_to']:.2f}   {out['aapl_return_pct']:+.2f}%")
+print(f"SPY           {out['spy_close_from']:.2f} -> {out['spy_close_to']:.2f}   {out['spy_return_pct']:+.2f}%")
 print(f"AAPL minus SPY  {out['spread_pts']:+.2f} points   (computed on this machine, not by the model)")
