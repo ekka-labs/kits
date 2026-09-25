@@ -445,7 +445,8 @@ settle_submission() {
     case "$ST" in new|accepted|pending_new) ST="waiting to be filled" ;; filled) ST="filled" ;; esac
     ok "Alpaca accepted the order: buy $QTY share of $PICK_NAME at up to \$$LIMIT."
     say "      Status at Alpaca: $ST."
-    say "      ${B}See it yourself:${N} open ${C}$ALPACA_KEYS${N}, switch to your paper account, and open ${B}Orders${N}."
+    say "      ${B}See it yourself:${N} open ${C}$ALPACA_KEYS${N}, switch to your paper account,"
+    say "      and open ${B}Orders${N}."
     say "      It is there as: buy $QTY $VERDICT, limit \$$LIMIT. Its client order id is $CLIENT_ID."
   elif refused_by_ekka; then
     say "      ${B}Refused: your $PERMIT had already run out.${N} The permission ended exactly when you set it to,"
