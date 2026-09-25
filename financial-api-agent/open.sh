@@ -37,6 +37,8 @@ ROLL=${ROLL:-0.04}
 say()   { printf '%s\n' "$*"; [ "$ROLL" = 0 ] || sleep "$ROLL"; }
 head_() { say ""; say "  ${B}$1${N}"; say "  ${D}$(printf '%*s' "${#1}" '' | tr ' ' '-')${N}"; }
 ok()    { say "  ${G}✔${N} $*"; }
+# The AI's reason is the model's own words, one long line: wrap it so a terminal never breaks a word.
+say_reason() { printf '%s\n' "$1" | fold -s -w 82 | awk 'NR==1{print "      Its reason: " $0; next}{print "                  " $0}' | while IFS= read -r l; do say "$l"; done; }
 note()  { say "      ${D}$*${N}"; }
 # A command gets air: a line somebody is meant to read and type has blank lines around it.
 cmd()   { say ""; say "      ${C}$*${N}"; say ""; }
@@ -245,8 +247,8 @@ read_verdict() {
   VERDICT=$("$HERE/bin/show-verdict" "$OUTF.show" --word 2>/dev/null || echo no_verdict)
   WHY=$("$HERE/bin/show-verdict" "$OUTF.show" | sed -n 's/^explanation   //p')
   case "$VERDICT" in
-    AAPL) say "      ${B}The AI picks: Apple (AAPL)${N}"; say "      Its reason: $WHY" ;;
-    SPY)  say "      ${B}The AI picks: the S&P 500 fund (SPY)${N}"; say "      Its reason: $WHY" ;;
+    AAPL) say "      ${B}The AI picks: Apple (AAPL)${N}"; say_reason "$WHY" ;;
+    SPY)  say "      ${B}The AI picks: the S&P 500 fund (SPY)${N}"; say_reason "$WHY" ;;
     invalid_model_output) say "      ${B}The AI did not answer clearly with AAPL or SPY.${N}" ;;
   esac
   if [ "$VERDICT" = no_verdict ]; then
@@ -512,8 +514,8 @@ say "  ${B}What the AI is sent${N}"
 printf '%s\n' "$SUMMARY" | while IFS= read -r l; do say "$l"; done
 say "    Nothing else: not your keys, not your account number, not your other orders."
 say ""
-say "  ${B}You control this message.${N} Change the rule in ${C}bin/prompt${N}. EKKA passes it to the AI and"
-say "  keeps a copy with the run, so you can see later exactly what the AI was told."
+say "  ${B}You control this message.${N} Change the rule in ${C}bin/prompt${N}. EKKA's AI gate carries it to"
+say "  the AI, and EKKA keeps a copy with the run, so you can see later exactly what the AI was told."
 say ""
 printf "  ${Y}Press p to see the full message, or Enter to ask the AI.${N} "
 read -r REPLY <&3 || REPLY=q
