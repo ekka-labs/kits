@@ -1,9 +1,8 @@
-# Rehearse the wallet kit the way a stranger meets it: a clean box
-# with nothing on it. Nothing from your Mac leaks in, so if it works here it
-# works for them.
+# Rehearse the Wallet Kit the way a stranger meets it: a clean box
+# with nothing on it. The Kit is copied into the image; sessions and keys are entered only at runtime.
 #
 #   docker build -f Dockerfile.rehearsal -t ekka-kitbox .
-#   docker run -it --name kitbox -v "$PWD":/kit ekka-kitbox bash    # window 1: the Enclave (run from this folder)
+#   docker run -it --name kitbox ekka-kitbox bash    # window 1: the Enclave (run from this folder)
 #   docker exec -it -u person kitbox bash                            # window 2: you
 #   docker exec -it -u agent kitbox bash                           # window 3: the agent
 #
@@ -17,11 +16,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # A non-root user, because the person running this kit will not be root either.
-# Two users, on purpose. `person` is the human: signed in, owns ~/.ekka and the
-# admin session inside it. `agent` is the one you point an AI at: a shell, but
-# not the person's shell. It cannot read the person's session, so it cannot grant itself
-# anything, and it cannot read the vault. The agent is never the admin.
+# The guided walkthrough uses person. An OS user alone does not provide a
+# restricted EKKA execution identity; agent is reserved for client experiments.
 RUN useradd -m -s /bin/bash person && useradd -m -s /bin/bash agent
+COPY --chown=person:person . /kit
 USER person
 WORKDIR /home/person
 ENV PATH="/home/person/.local/bin:${PATH}"
@@ -31,7 +29,7 @@ ENV PATH="/home/person/.local/bin:${PATH}"
 #
 #   curl -fsSL -H "X-Ekka-Key: <key>" https://get.ekka.ai/install.sh | sh
 #   export PATH="$HOME/.local/bin:$PATH"
-#   ekka --version                 # must be 0.1.87 or later
+#   ekka --version                 # must be 0.1.88 or later
 #   ekka login --email you@example.com
 #   ekka org create <slug>
 #   ekka enclave create --name "wallet agent"

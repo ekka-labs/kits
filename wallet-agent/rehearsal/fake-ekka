@@ -1,55 +1,145 @@
 #!/bin/sh
-# A stand-in for the ekka CLI, for rehearsing THIS kit without a server. It answers the way
-# ekka answers on prod, with the same words, and keeps its little state in $REHEARSAL_STATE.
-# It is never installed for a person; CI uses it to run the kit end to end.
+# A stand-in for the ekka CLI, for rehearsing this kit without a server. It answers the way ekka
+# answers on prod, with the same words, and keeps its little state in $REHEARSAL_STATE. It is
+# never installed for a person; CI uses it to run the kit end to end.
 #
-# ⛔ ONE STAND-IN PER KIT, AND THE DUPLICATION IS THE FEATURE. There used to be a single shared
-# stand-in with a branch per kit name, and that is how another kit's API vendor, agent name and
-# plan names travelled into a public release of THIS kit. `whoami`, `gate grant add` and
-# `receipts verify` will look nearly identical in every kit's copy. Leave them. A stand-in that
-# stands in for a different API is a different program that happens to rhyme, and factoring the
-# rhyme back out is the exact change that leaked.
+# ⛔ ONE STAND-IN PER KIT, AND THE DUPLICATION IS THE FEATURE (see the Financial Kit's).
+#
+# Every line the kit PARSES is copied from a real answer, measured on prod on 2026-09-25 with the
+# proof plans for this kit: `✓ Plan completed (run <uuid>)`, `Its output is at <path>`,
+# `RESOURCE_GRANT_DENIED: no Grant lets ... sign with a key in the vault`, `grades  decide:
+# decision=pay`, the sign step's output fields, and Blockscout's own answers, including the
+# send's HTTP 200 with a JSON-RPC error inside and its 429 when the free tier is used up.
+#
+# The wallet is the address of private key 1, a published test value, so the kit's address check
+# runs for real: the stand-in returns that key's public key. REHEARSAL_WRONG_KEY returns the
+# public key of private key 2 instead, and the kit must refuse to send.
 S=${REHEARSAL_STATE:?}
-[ -n "${REHEARSAL_STATE:-}" ] && printf '%s\n' "$*" >> "$S/calls.log"
+printf '%s\n' "$*" >> "$S/calls.log"
 
-# The kit's own floor is what it checks, so it is answered at or above that floor.
-VERSION=0.1.87
+VERSION=0.1.89
+ENC=969c26dc
+ORG=example-org
+G1=0x0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8
+G2=0x04c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee51ae168fea63dc339a3c58419466ceaeef7f632653266d0e1236431a950cfe52a
+
+next_run() {
+  n=$(( $(cat "$S/runs" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$S/runs"
+  printf '00000000-0000-4000-8000-%012d' "$n"
+}
+art() { # run  step  json
+  D="$HOME/.ekka/artifacts/$1"; mkdir -p "$D"; printf '%s\n' "$3" > "$D/$2.json"; printf '%s' "$D/$2.json"
+}
+completed() { # run  step  artifact
+  echo "→ Dispatching plan through your Enclave..."; echo "→ Waiting for the run to finish..."
+  echo "✓ Plan completed (run $1)."; echo ""
+  echo "  Step '$2' produced no text. Its output is at $3"
+}
+denied_sign() { # run
+  echo "✗ Plan failed (run $1)."
+  echo "  RESOURCE_GRANT_DENIED"
+  echo "  RESOURCE_GRANT_DENIED: no Grant lets Wallet Agent (wallet-agent) sign with a key in the vault on any of enclave${ENC}Secret, resource keys/SEPOLIA_WALLET_KEY. Allow it: ekka gate grant add --agent wallet-agent --type secret --instance enclave${ENC}Secret --resource keys/SEPOLIA_WALLET_KEY --capability secret.vault.sign --no-fingerprint"
+  echo "  Run detail:     ekka run show $1"
+  exit 2
+}
+input_of() { # name  all-args...
+  want=$1; shift
+  for a in "$@"; do case "$a" in "$want="*) printf '%s' "${a#*=}"; return ;; esac; done
+}
+signed() { # run  digest
+  PK=$G1; [ -n "${REHEARSAL_WRONG_KEY:-}" ] && PK=$G2
+  A=$(art "$1" sign "{\"op\":\"sign\",\"resource\":\"keys/SEPOLIA_WALLET_KEY\",\"alg\":\"secp256k1\",\"digest\":\"$2\",\"signature_sha256_b64\":\"x\",\"signature\":\"0x$(printf '%064x' 7)$(printf '%064x' 11)\",\"recovery_id\":1,\"public_key\":\"$PK\"}")
+  completed "$1" sign "$A"
+}
+decision() { if [ -n "${REHEARSAL_HOLD:-}" ]; then echo hold; elif [ -n "${REHEARSAL_INVALID:-}" ]; then echo invalid; else echo pay; fi; }
 
 case "$1 $2" in
   "--version ") echo "ekka $VERSION" ;;
-  "whoami ") printf "\n  Signed in as you@example.com, example-org (owner).\n\n  This machine is enrolled\n" ;;
-  "secret list") { [ -f "$S/keyput" ] && echo "● SEPOLIA_WALLET_KEY  generic"; true; } ;;
-  "secret put") [ "$3" = --stdin ] && cat >/dev/null; touch "$S/keyput"; echo "✓ Stored secret SEPOLIA_WALLET_KEY" ;;
-  "api list") { [ -f "$S/rowmade" ] && printf '  example-org/eth-balance-sepolia  1.0.0  private  connected here\n'; true; } ;;
-  "api create") echo "✓ Added example-org/eth-balance-sepolia@1.0.0"; echo "  1 operation, private to this organization." ;;
-  "api connect") cat >/dev/null 2>&1 || true; touch "$S/rowmade"; echo "✓ Connected" ;;
-  "gate list") printf 'api/enclave969c26dcApi\nsecret/enclave969c26dcSecret\n' ;;
-  "agent create") echo "✓ Created agent" ;;
-  "plan template") printf '{\n  "plan": {\n    "code": "wallet.sign",\n    "name": "wallet.sign"\n  },\n  "definition": {}\n}\n' > "$3" ;;
+  "whoami ") printf '\n  You\n    email        you@example.com\n    organization %s (owner)\n\n  This machine\n    enclave id   %s-0000-4000-8000-000000000001\n    organization %s\n' "$ORG" "$ENC" "$ORG" ;;
+  "secret list") printf '\n  Stored secrets\n'; [ -f "$S/key" ] && printf '    ● SEPOLIA_WALLET_KEY  generic\n'; : ;;
+  "secret put") cat >/dev/null; touch "$S/key" ;;
+  "gate list")
+     printf '\n  Gates this org can address\n\n  api/enclave%sApi\n  secret/enclave%sSecret\n' "$ENC" "$ENC"
+     [ -n "${REHEARSAL_NO_GATEWAY:-}" ] && [ ! -f "$S/gateway" ] && exit 0
+     printf '  llm/prod\n      url        https://gateway.ekka.ai\n      serves     anthropic/sonnet-4  (infer)\n\n' ;;
+  "gate register") touch "$S/gateway"; echo "✓ Registered prod for your organization" ;;
+  "api list") [ -f "$S/row" ] && { [ -f "$S/conn" ] && printf '  %s/eth-sepolia   Sepolia test network  yours  bearer  connected here\n' "$ORG" || printf '  %s/eth-sepolia   Sepolia test network  yours  bearer  not connected\n' "$ORG"; }; : ;;
+  "api create") touch "$S/row"; echo "✓ Added $ORG/eth-sepolia@1.0.0" ;;
+  "api connect") cat >/dev/null 2>&1 || true; touch "$S/conn"; echo "✓ Connected" ;;
+  "agent create") echo "✓ Agent created: wallet-agent" ;;
   "plan create")
-     case "$3" in
-       *balance*) echo "✓ Created ekka.wallet.balance@1.0.0" ;;
-       *)         echo "✓ Created ekka.wallet.sign@1.0.0" ;;
-     esac ;;
+     case "$3" in *wallet.fees*) if [ -n "${REHEARSAL_EKKA_GOES_AWAY:-}" ]; then
+       echo "ekka plan: could not reach the control plane: HTTP 521 (origin unreachable)" >&2; exit 1; fi ;; esac
+     code=$(grep -oE '"code": *"wallet\.[A-Za-z]+"' "$3" | head -1 | sed 's/.*"\(wallet\.[A-Za-z]*\)"/\1/')
+     echo "✓ Plan created: ekka.$code@1.0.0 · unlisted" ;;
   "gate grant") case "$3" in
       add) case "$*" in
-             *api.read*)  if [ -n "${REHEARSAL_GRANT_FAILS:-}" ]; then echo "ekka gate grant add: GOVERN_HTTP_ERROR (503)" >&2; exit 1; fi
-                echo "✓ Granted api.read on enclave969c26dcApi/apis/example-org/eth-balance-sepolia to agent wallet-agent"
-                echo "  Grant 1a2b3c4d-0000-0000-0000-000000000000: revoke with \`ekka gate grant revoke 1a2b3c4d-0000-0000-0000-000000000000\`" ;;
-             *secret*) touch "$S/signok"; echo "✓ Granted secret.vault.sign on enclave969c26dcSecret/keys/SEPOLIA_WALLET_KEY to agent wallet-agent"
-                echo "  Grant 5e5e5e5e-1111-2222-3333-444444444444: revoke with \`ekka gate grant revoke 5e5e5e5e-1111-2222-3333-444444444444\`" ;;
-             *) echo "✓ Granted api.read on enclave969c26dcApi/apis/example-org/eth-balance-sepolia to agent wallet-agent"
-                echo "  Grant 1a2b3c4d-0000-0000-0000-000000000000: revoke with \`ekka gate grant revoke 1a2b3c4d-0000-0000-0000-000000000000\`" ;;
+             *vault.sign*) if [ -n "${REHEARSAL_GRANT_FAILS:-}" ]; then echo "ekka gate grant add: GOVERN_HTTP_ERROR (503)" >&2; exit 1; fi
+                touch "$S/signgrant"
+                echo "✓ Granted secret.vault.sign on enclave${ENC}Secret/keys/SEPOLIA_WALLET_KEY to agent wallet-agent"
+                echo "  To take it back later:  ekka gate grant revoke 5e5e5e5e-1111-2222-3333-444444444444" ;;
+             *) echo "✓ Granted to agent wallet-agent"
+                echo "  To take it back later:  ekka gate grant revoke 1a2b3c4d-0000-0000-0000-000000000000" ;;
            esac ;;
-      revoke) rm -f "$S/signok"; echo "✓ Revoked grant $4" ;;
-      list) echo "1a2b3c4d  api.read enclave969c26dcApi/apis/example-org/eth-balance-sepolia" ;;
+      revoke) rm -f "$S/signgrant"; echo "✓ Revoked grant $4" ;;
+      list) echo "  (the kit's grants)" ;;
     esac ;;
+  "run show")
+     v=$(cat "$S/decision-$3" 2>/dev/null || true)
+     echo ""; echo "  Run $3"
+     case "$v" in
+       pay|hold)
+         echo "    grades       decide: decision=$v"
+         echo "  {\"decision\": \"$v\", \"explanation\": \"The payee is on the approved list. After paying 0.001 and a fee of up to 0.00042, 0.0486 test ETH is left, above the 0.01 minimum.\"}" ;;
+       invalid)
+         echo "    status       failed"; echo "    error        WORKFLOW_FAILED"
+         echo "    detail       plan_transitioned_to_fail: operation transitioned to reserved \"fail\" target" ;;
+       *) echo "    status       failed"; echo "    error        credit_exhausted" ;;
+     esac ;;
   "plan run") case "$3" in
-      *balance*) if [ -n "${REHEARSAL_STEP1_FAILS:-}" ]; then echo "→ Dispatching plan \`ekka.wallet.balance@1.0.0\` through your Enclave..."; echo "ekka plan: the Enclave refused the request (-32001): govern dispatch failed: GOVERN_AUTH_REJECTED ()" >&2; exit 1; fi
-                 echo "✓ Plan completed (run 7bdadd07-ec4a-423c-85b3-03849912992d)."; echo ""; echo "  Step 'call' produced no text. Its output is at ${S}/art/abc123/call.json"; echo "  Content hash: BvqolThtq4/LL5r9Nt2wLSyKk0wQWuQGB+9aJ0dPZ2g=" ;;
-      *) if [ -n "${REHEARSAL_STEP2_AUTH_FAILS:-}" ]; then echo "ekka plan: the Enclave refused the request (-32001): govern dispatch failed: GOVERN_AUTH_REJECTED ()" >&2; exit 1; fi
-         if [ -f "$S/signok" ]; then echo "✓ Plan completed (run 9999)."; echo ""; echo "  Step 'call' produced no text. Its output is at ${S}/art/sig1/call.json"; echo "  Content hash: zzz"; else echo "ekka plan: the Enclave refused the request (-32001): govern dispatch failed: RESOURCE_GRANT_DENIED (no Grant covers keys/SEPOLIA_WALLET_KEY (sign))" >&2; exit 1; fi ;;
+      *wallet.balance*)
+         if [ -n "${REHEARSAL_STEP1_FAILS:-}" ]; then echo "ekka plan: the Enclave refused the request (-32001): govern dispatch failed: GOVERN_AUTH_REJECTED ()" >&2; exit 1; fi
+         W=50000000000000000; [ -n "${REHEARSAL_LOW_BALANCE:-}" ] && W=2000000000000000
+         [ -f "$S/paid" ] && W=49969000000000000
+         R=$(next_run); A=$(art "$R" call "{\"resource\":\"apis/$ORG/eth-sepolia\",\"status\":200,\"body\":{\"hash\":\"0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf\",\"coin_balance\":\"$W\"}}")
+         completed "$R" call "$A" ;;
+      *wallet.sent*) R=$(next_run)
+         if [ -f "$S/paid" ]; then B='{"items":[{"nonce":0,"hash":"0xabc"}],"next_page_params":null}'; else B='{"items":[],"next_page_params":null}'; fi
+         A=$(art "$R" call "{\"resource\":\"apis/$ORG/eth-sepolia\",\"status\":200,\"body\":$B}"); completed "$R" call "$A" ;;
+      *wallet.fees*) if [ -n "${REHEARSAL_DAILY_LIMIT:-}" ]; then
+           echo "ekka plan: the Enclave refused the request (-32001): govern dispatch failed: GOVERN_HTTP_ERROR (429): This organization has used 200 of 200 execution.run today. It resets at the start of the next day, and an admin can raise the limit any time with \`ekka org limits set\`. (USAGE_CEILING_EXCEEDED)" >&2; exit 1; fi
+         R=$(next_run)
+         A=$(art "$R" call "{\"resource\":\"apis/$ORG/eth-sepolia\",\"status\":200,\"body\":{\"gas_prices\":{\"slow\":1.11,\"average\":1.93,\"fast\":2.24}}}"); completed "$R" call "$A" ;;
+      *wallet.decide*) R=$(next_run)
+         if [ -n "${REHEARSAL_NO_VERDICT:-}" ]; then echo "✗ Plan failed (run $R)."; echo "  GOVERN_HTTP_ERROR (402) credit_exhausted"; exit 2; fi
+         d=$(decision); printf '%s' "$d" > "$S/decision-$R"
+         case "$d" in
+           pay) if [ -f "$S/signgrant" ]; then signed "$R" "$(input_of digest "$@")"; else denied_sign "$R"; fi ;;
+           hold) echo "✓ Plan completed (run $R)." ;;
+           *) echo "✗ Plan failed (run $R)."; echo "  WORKFLOW_FAILED"; exit 2 ;;
+         esac ;;
+      *wallet.sign*) R=$(next_run)
+         if [ -n "${REHEARSAL_PERMIT_ENDS:-}" ]; then rm -f "$S/signgrant"; fi
+         [ -f "$S/signgrant" ] || denied_sign "$R"
+         signed "$R" "$(input_of digest "$@")" ;;
+      *wallet.send*) R=$(next_run)
+         # The free tier is used up on the FIRST send of every walk, as it was on prod on 2026-09-25.
+         if [ -z "${REHEARSAL_NOT_BUSY:-}" ] && [ ! -f "$S/busy" ]; then
+           touch "$S/busy"; echo "✗ Plan failed (run $R)."
+           echo "  why  the API answered 429, and this check expects 200"; exit 2
+         fi
+         RAW=$(input_of raw_tx "$@")
+         if [ -n "${REHEARSAL_NO_FUNDS:-}" ]; then B='{"error":{"code":-32000,"message":"InsufficientFunds, Balance is zero, cannot pay gas"},"id":1,"jsonrpc":"2.0"}'
+         else
+           H=$(python3 -c 'import importlib.machinery as im,sys; m=im.SourceFileLoader("tx","bin/tx").load_module(); print("0x"+m.keccak256(bytes.fromhex(sys.argv[1][2:])).hex())' "$RAW" 2>/dev/null)
+           B="{\"jsonrpc\":\"2.0\",\"result\":\"$H\",\"id\":1}"; touch "$S/paid"
+         fi
+         A=$(art "$R" call "{\"resource\":\"apis/$ORG/eth-sepolia\",\"status\":200,\"body\":$B}"); completed "$R" call "$A" ;;
+      *wallet.lookup*) R=$(next_run)
+         A=$(art "$R" call "{\"resource\":\"apis/$ORG/eth-sepolia\",\"status\":200,\"body\":{\"status\":\"ok\",\"result\":\"success\",\"confirmations\":2,\"fee\":{\"type\":\"actual\",\"value\":\"31000000000000\"}}}")
+         completed "$R" call "$A" ;;
+      *) echo "fake ekka: unexpected plan $3" >&2; exit 1 ;;
     esac ;;
-  "receipts verify") echo "✓ All 14 records check out." ;;
+  "receipts verify") case "$*" in *--json*) if [ -n "${REHEARSAL_RECORD_BROKEN:-}" ]; then echo '{"chain_intact":false,"ok":false,"verdict":"broken"}'; exit 1; fi; echo '{"chain_intact":true,"ok":true,"records":14,"verdict":"intact"}' ;; *) echo "✓ All 14 records check out." ;; esac ;;
   *) echo "fake ekka: $*" >&2; exit 1 ;;
 esac

@@ -1,2 +1,4 @@
 api.read
+api.write
+llm.infer
 secret.vault.sign

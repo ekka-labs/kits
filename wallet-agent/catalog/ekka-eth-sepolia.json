@@ -1,0 +1,61 @@
+{
+  "name": "ekka/eth-sepolia",
+  "title": "Sepolia test network, through Blockscout: read one wallet, send a payment that is already signed",
+  "base_url": "https://eth-sepolia.blockscout.com",
+  "auth": {
+    "kind": "bearer"
+  },
+  "credential_format": "This endpoint is public and ignores the token. Any non-empty string works. EKKA cannot connect an API with no credential today.",
+  "operations": [
+    {
+      "call": "balance",
+      "title": "Read the balance of one address",
+      "verb": "read",
+      "method": "GET",
+      "path": "/api/v2/addresses/@call.address",
+      "inputs": {
+        "address": { "description": "The address, 0x and 40 hex characters. The kit writes your own into the plan.", "required": true }
+      }
+    },
+    {
+      "call": "sent",
+      "title": "List the payments one address has sent, newest first",
+      "verb": "list",
+      "method": "GET",
+      "path": "/api/v2/addresses/@call.address/transactions",
+      "query_template": { "filter": "from" },
+      "inputs": {
+        "address": { "description": "The address, 0x and 40 hex characters.", "required": true }
+      }
+    },
+    {
+      "call": "fees",
+      "title": "Read the network's current fee levels",
+      "verb": "read",
+      "method": "GET",
+      "path": "/api/v2/stats",
+      "inputs": {}
+    },
+    {
+      "call": "payment",
+      "title": "Look one payment up by its hash",
+      "verb": "read",
+      "method": "GET",
+      "path": "/api/v2/transactions/@call.hash",
+      "inputs": {
+        "hash": { "description": "The payment's hash, 0x and 64 hex characters.", "required": true }
+      }
+    },
+    {
+      "call": "send",
+      "title": "Send one payment that is already signed. It cannot make, change or sign a payment.",
+      "verb": "send",
+      "method": "POST",
+      "path": "/api/eth-rpc",
+      "body_template": { "jsonrpc": "2.0", "id": 1, "method": "eth_sendRawTransaction", "params": ["@call.raw_tx"] },
+      "inputs": {
+        "raw_tx": { "description": "The signed payment, 0x02 followed by hex, as bin/tx assembles it.", "required": true }
+      }
+    }
+  ]
+}

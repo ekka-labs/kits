@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""Build, fingerprint and assemble one Sepolia payment. It never sees a key.
+
+    tx digest   <tx.json>                              the 64 hex characters the Enclave signs
+    tx assemble <tx.json> <signature> <recovery_id>    the signed payment (0x02...) and its hash
+    tx address  <public_key>                           the wallet address a public key belongs to
+    tx selftest                                        the published test vectors, all must pass
+
+tx.json holds one EIP-1559 (type 2) payment: chain_id, nonce, max_priority_fee_per_gas,
+max_fee_per_gas, gas, to, value (all whole numbers, in wei), and data (hex, usually "0x").
+
+WHY THIS FILE EXISTS. The Enclave signs a 32-byte digest and does not hash for the caller
+(ekka-runner signer/vault_key.rs), so something on this computer has to turn a payment into
+those 32 bytes, and turn the signature back into a payment the network accepts. That is all this
+does: RLP (Ethereum's byte layout) and Keccak-256 (Ethereum's hash; Python's sha3_256 is a
+DIFFERENT function and would sign the wrong bytes). No curve math: the Enclave does that.
+Hand-written crypto is only as good as its tests, so `tx selftest` runs published vectors,
+including a real Sepolia payment rebuilt byte for byte to its on-chain hash."""
+import json, sys
+
+# ---------------------------------------------------------------- Keccak-256 (the original, pre-SHA-3 padding)
+_RC = [0x0000000000000001, 0x0000000000008082, 0x800000000000808A, 0x8000000080008000,
+       0x000000000000808B, 0x0000000080000001, 0x8000000080008081, 0x8000000000008009,
+       0x000000000000008A, 0x0000000000000088, 0x0000000080008009, 0x000000008000000A,
+       0x000000008000808B, 0x800000000000008B, 0x8000000000008089, 0x8000000000008003,
+       0x8000000000008002, 0x8000000000000080, 0x000000000000800A, 0x800000008000000A,
+       0x8000000080008081, 0x8000000000008080, 0x0000000080000001, 0x8000000080008008]
+_ROT = [[0, 36, 3, 41, 18], [1, 44, 10, 45, 2], [62, 6, 43, 15, 61], [28, 55, 25, 21, 56], [27, 20, 39, 8, 14]]
+_M = (1 << 64) - 1
+
+def _rol(v, n):
+    return ((v << n) | (v >> (64 - n))) & _M if n else v
+
+def _f(a):
+    for rc in _RC:
+        c = [a[x][0] ^ a[x][1] ^ a[x][2] ^ a[x][3] ^ a[x][4] for x in range(5)]
+        d = [c[(x - 1) % 5] ^ _rol(c[(x + 1) % 5], 1) for x in range(5)]
+        a = [[a[x][y] ^ d[x] for y in range(5)] for x in range(5)]
+        b = [[0] * 5 for _ in range(5)]
+        for x in range(5):
+            for y in range(5):
+                b[y][(2 * x + 3 * y) % 5] = _rol(a[x][y], _ROT[x][y])
+        a = [[b[x][y] ^ ((~b[(x + 1) % 5][y]) & b[(x + 2) % 5][y]) for y in range(5)] for x in range(5)]
+        a[0][0] ^= rc
+    return a
+
+def keccak256(data: bytes, pad: int = 0x01) -> bytes:
+    rate = 136
+    msg = bytearray(data) + bytes([pad])
+    msg += b"\x00" * ((-len(msg)) % rate)
+    msg[-1] |= 0x80
+    a = [[0] * 5 for _ in range(5)]
+    for off in range(0, len(msg), rate):
+        block = msg[off:off + rate]
+        for i in range(rate // 8):
+            a[i % 5][i // 5] ^= int.from_bytes(block[8 * i:8 * i + 8], "little")
+        a = _f(a)
+    return b"".join(a[i % 5][i // 5].to_bytes(8, "little") for i in range(4))
+
+# ---------------------------------------------------------------- RLP
+def _int(n: int) -> bytes:
+    if n < 0:
+        raise ValueError("RLP has no negative numbers")
+    return n.to_bytes((n.bit_length() + 7) // 8, "big")   # 0 is the empty string
+
+def _len(n: int, short: int) -> bytes:
+    if n < 56:
+        return bytes([short + n])
+    b = _int(n)
+    return bytes([short + 55 + len(b)]) + b
+
+def rlp(item) -> bytes:
+    if isinstance(item, int):
+        item = _int(item)
+    if isinstance(item, (bytes, bytearray)):
+        if len(item) == 1 and item[0] < 0x80:
+            return bytes(item)
+        return _len(len(item), 0x80) + bytes(item)
+    if isinstance(item, list):
+        body = b"".join(rlp(i) for i in item)
+        return _len(len(body), 0xC0) + body
+    raise TypeError(f"RLP cannot encode {type(item).__name__}")
+
+# ---------------------------------------------------------------- the payment
+def _hex(s: str) -> bytes:
+    s = s[2:] if s[:2] in ("0x", "0X") else s
+    return bytes.fromhex(s)
+
+def _fields(t: dict) -> list:
+    to = _hex(t["to"])
+    if len(to) != 20:
+        raise ValueError("`to` must be an address, 0x and 40 hex characters")
+    return [int(t["chain_id"]), int(t["nonce"]), int(t["max_priority_fee_per_gas"]),
+            int(t["max_fee_per_gas"]), int(t["gas"]), to, int(t["value"]), _hex(t.get("data", "0x")), []]
+
+def digest(t: dict) -> str:
+    return keccak256(b"\x02" + rlp(_fields(t))).hex()
+
+def assemble(t: dict, signature: str, recovery_id: int):
+    sig = _hex(signature)
+    if len(sig) != 64:
+        raise ValueError("the signature must be 64 bytes, r then s")
+    if recovery_id not in (0, 1):
+        raise ValueError("recovery_id must be 0 or 1")
+    r, s = int.from_bytes(sig[:32], "big"), int.from_bytes(sig[32:], "big")
+    raw = b"\x02" + rlp(_fields(t) + [recovery_id, r, s])
+    return "0x" + raw.hex(), "0x" + keccak256(raw).hex()
+
+def address(public_key: str) -> str:
+    pk = _hex(public_key)
+    if len(pk) == 65 and pk[0] == 4:
+        pk = pk[1:]
+    if len(pk) != 64:
+        raise ValueError("expected an uncompressed public key: 0x04 and 128 hex characters")
+    return "0x" + keccak256(pk)[-20:].hex()
+
+# ---------------------------------------------------------------- published vectors
+def selftest() -> int:
+    checks = [
+        # Keccak-256 (Ethereum's hash), from the Keccak team's reference values
+        ("keccak256 of nothing", keccak256(b"").hex(),
+         "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"),
+        ("keccak256 of 'abc'", keccak256(b"abc").hex(),
+         "4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45"),
+        ("keccak256 of the quick brown fox", keccak256(b"The quick brown fox jumps over the lazy dog").hex(),
+         "4d741b6f1eb29cb2a9b9911c82f56fa8d73b04959d3d9d222895df6c0b28aa15"),
+        # RLP, from the Ethereum RLP specification's examples
+        ("rlp 'dog'", rlp(b"dog").hex(), "83646f67"),
+        ("rlp ['cat','dog']", rlp([b"cat", b"dog"]).hex(), "c88363617483646f67"),
+        ("rlp empty string", rlp(b"").hex(), "80"),
+        ("rlp empty list", rlp([]).hex(), "c0"),
+        ("rlp 0", rlp(0).hex(), "80"),
+        ("rlp 15", rlp(15).hex(), "0f"),
+        ("rlp 1024", rlp(1024).hex(), "820400"),
+        ("rlp nested sets", rlp([[], [[]], [[], [[]]]]).hex(), "c7c0c1c0c3c0c1c0"),
+        ("rlp 56-byte string", rlp(b"Lorem ipsum dolor sit amet, consectetur adipisicing elit").hex()[:4], "b838"),
+        # the address of private key 1 is the address of the curve's generator point G
+        ("address of key 1", address(
+            "0x0479be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+            "483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"),
+         "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf"),
+    ]
+    # A real payment on Sepolia, block 0xb3c162, rebuilt from its fields and signature. Its hash is
+    # the network's own name for it, so matching it proves the layout, byte for byte.
+    real = {"chain_id": 0xAA36A7, "nonce": 0x5540CD, "max_priority_fee_per_gas": 0x77359400,
+            "max_fee_per_gas": 0x746A528800, "gas": 0x7530, "to": "0xdb6726c9da14fa2015d74bd87a38d4201740a262",
+            "value": 0xAFBF90E73B8C000, "data": "0x"}
+    _, h = assemble(real, "970ee0c811c443e00a50d24a6d6dc2d133d6beff0fdf00fa0b1b45286d3dc7c9"
+                          "580c1f405fbd4cdcb9303de46ef65bfda339995118eae8ed43d076105bf80b06", 0)
+    checks.append(("a real Sepolia payment, rebuilt to its hash", h,
+                   "0x480678105c67dacb80997fa5d3f5b8f97e9b6f15a0d4a20d4071e3e6b619d586"))
+    # The same permutation with SHA-3's padding must equal Python's own sha3_256 at every length,
+    # across block edges (136 bytes). That tests the multi-block path against an independent source.
+    import hashlib
+    sample = lambda n: bytes((i * 7) % 256 for i in range(n))
+    edges = [n for n in range(420) if keccak256(sample(n), 0x06) != hashlib.sha3_256(sample(n)).digest()]
+    checks.append(("the permutation matches sha3_256 at every length 0..419", str(edges), "[]"))
+    bad = 0
+    for name, got, want in checks:
+        ok = got == want
+        bad += not ok
+        print(f"{'ok  ' if ok else 'FAIL'} {name}" + ("" if ok else f"\n     got  {got}\n     want {want}"))
+    print(f"{len(checks) - bad} of {len(checks)} vectors pass")
+    return 1 if bad else 0
+
+def main(argv) -> int:
+    if len(argv) >= 1 and argv[0] == "selftest":
+        return selftest()
+    try:
+        if len(argv) == 2 and argv[0] == "digest":
+            print(digest(json.load(open(argv[1]))))
+        elif len(argv) == 4 and argv[0] == "assemble":
+            raw, h = assemble(json.load(open(argv[1])), argv[2], int(argv[3]))
+            print(json.dumps({"raw_tx": raw, "hash": h}))
+        elif len(argv) == 2 and argv[0] == "address":
+            print(address(argv[1]))
+        else:
+            print(__doc__)
+            return 2
+    except (ValueError, KeyError, TypeError, OSError, json.JSONDecodeError) as e:
+        print(f"tx: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

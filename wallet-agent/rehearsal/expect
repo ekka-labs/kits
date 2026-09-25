@@ -1,9 +1,46 @@
-# One screen this kit MUST print, per line. A shared list would pass a kit that
-# printed somebody else's walkthrough, which is the one failure a rehearsal exists
-# to catch. Lines starting with # are comments.
-Plan completed
-balance  1.234500 ETH
-RESOURCE_GRANT_DENIED
-Refused again
-records check out
-nobody wrote code
+# One screen this kit MUST print, per line, in the four-step walk: the AI is asked ONCE, its pay is
+# stopped without permission, signed and sent with the person's permission (through one busy
+# answer, retried with the same bytes), confirmed, the permission taken back, the same payment
+# stopped again, the record checked, and the plain summary.
+Let an AI pay for you. You decide what it may do.
+Security   The AI can do only what you allowed
+two minutes: https://docs.ekka.ai/kits/wallet-agent/#what-you-need
+EKKA NEVER SEES YOUR PRIVATE KEY.
+Your key is stored on this computer, encrypted
+Added the Sepolia test network to your catalog
+Created your AI agent
+Saved its plan: decide whether to pay, then sign
+Allowed it to ask the AI
+Your AI agent is ready. It may NOT sign
+Your wallet holds 0.0500 test ETH
+What the AI is sent
+Nothing else: not your private key
+You control this message
+The AI decides: pay.
+EKKA stopped the payment.
+See it yourself: no new payment is on your wallet's page
+https://eth-sepolia.blockscout.com/address/0x7e5f4552091a69125d5dfcb7b8c2659029395bdf
+not who is paid or how much
+may sign ANY payment with this key, not only this one
+Permission given, for 10 minutes
+The AI is not asked again
+The signature belongs to your wallet
+The Sepolia service is busy right now
+Sending again is safe: it is the same signed payment
+The network took the payment.
+The network confirmed it: 0.001 test ETH
+See it yourself: it is the newest payment on your wallet's page
+Its hash begins 0x
+network charged a fee of 0.000031 test ETH
+Test ETH has no value.
+Permission taken back.
+EKKA stopped it. The permission is yours
+only the one payment from step 2 is on your wallet's page
+The record checks out. Nothing in it was changed.
+1. The AI decided to pay
+EKKA NEVER SAW YOUR PRIVATE KEY. To decide yes or no, EKKA's control plane was sent
+The AI gate carried the message to the model, a third party, not EKKA.
+To decide yes or no, EKKA's control plane is sent the message to the AI and the
+The AI gate carries the message to the model, a third party, not EKKA.
+Want your own model instead?
+Good to know: while a sign permission lasts, the agent may sign ANY payment

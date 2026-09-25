@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Read one Blockscout answer from a run's saved output, and say it in one line.
+
+    wallet balance <output.json>          the balance, in test ETH (an address never seen is 0)
+    wallet wei     <output.json>          the balance, in wei
+    wallet nonce   <output.json>          the next payment number: the last one sent, plus one
+    wallet fees    <output.json>          max_fee max_tip, in wei, from the network's fee levels
+    wallet sent    <output.json>          result=<hash> | error=<the network's own words>
+    wallet payment <output.json>          status fee_wei confirmations, or `pending`
+
+Nothing here decides anything a person has not been told: every number printed comes from the
+answer on disk, and a field that is missing is said, never guessed."""
+import json, math, sys
+
+def body(path):
+    d = json.load(open(path))
+    return d.get("body", d) if isinstance(d, dict) else d
+
+def eth(wei):
+    return f"{int(wei) / 1e18:.4f}"
+
+def main(a):
+    if len(a) != 2:
+        print(__doc__); return 2
+    what, path = a
+    try:
+        b = body(path)
+    except Exception as e:
+        print(f"unreadable: {e}"); return 1
+    if what in ("balance", "wei"):
+        w = int(b.get("coin_balance") or 0)
+        print(w if what == "wei" else eth(w))
+    elif what == "nonce":
+        items = b.get("items") or []
+        print(max(int(t["nonce"]) for t in items) + 1 if items else 0)
+    elif what == "fees":
+        g = b.get("gas_prices") or {}
+        avg = float(g.get("average") or g.get("fast") or 0)
+        if avg <= 0:
+            print("unknown"); return 1
+        tip = 1_500_000_000                                  # 1.5 gwei, what Sepolia pays today
+        cap = max(math.ceil((avg * 2) * 1e9) + tip, 3_000_000_000)
+        print(cap, tip)
+    elif what == "sent":
+        if isinstance(b, dict) and b.get("result"):
+            print(f"result={b['result']}")
+        elif isinstance(b, dict) and b.get("error"):
+            print(f"error={(b['error'] or {}).get('message', 'no message')}")
+        else:
+            print(f"error={str(b.get('message') if isinstance(b, dict) else b)[:160]}")
+    elif what == "payment":
+        st = b.get("status") if isinstance(b, dict) else None
+        if not st or b.get("result") == "pending":
+            print("pending"); return 0
+        fee = (b.get("fee") or {}).get("value", "0")
+        print(st, fee, b.get("confirmations", 0))
+    else:
+        print(__doc__); return 2
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

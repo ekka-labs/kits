@@ -1,8 +1,10 @@
 #!/bin/sh
-# EKKA wallet agent. Sets up one real AI agent in your own organization, then runs three steps in
-# front of you and explains each one.
-# It touches your key exactly once: reads it at a hidden prompt, checks the shape, hands it to the
-# Enclave, forgets it. Everything else here is plans, grants and explanations. Read it first if you like.
+# Wallet Kit: your AI decides whether to pay, your Enclave signs, you control what it is allowed
+# to do. A hosted model applies YOUR rule to one invoice and your live balance; its `pay` is the
+# only thing that can lead to a signature, and only while you have given permission to sign.
+# Sepolia test network only: test ETH has no value.
+# It touches your wallet's private key exactly once: reads it at a hidden prompt, checks the
+# shape, hands it to the Enclave, forgets it. Everything else is plans, grants and explanations.
 set -eu
 
 EKKA=${EKKA:-ekka}
@@ -10,16 +12,28 @@ EKKA_FLAG=${EKKA_FLAG:-}
 AGENT=${AGENT:-wallet-agent}
 KEY=${KEY:-SEPOLIA_WALLET_KEY}
 ENCLAVE=${ENCLAVE:-}
-ROW=eth-balance-sepolia                    # the one website, described in catalog/ekka-$ROW.json
-NETNAME="Sepolia test network"
-BALANCE_SITE=https://eth-sepolia.blockscout.com
+MODEL=${MODEL:-anthropic/sonnet-4}
+ROW=eth-sepolia                           # the Sepolia row, catalog/ekka-$ROW.json
+CHAIN_ID=11155111                         # Sepolia
+EXPLORER=https://eth-sepolia.blockscout.com
 FAUCET=https://cloud.google.com/application/web3/faucet/ethereum/sepolia
+FAUCET2=https://www.alchemy.com/faucets/ethereum-sepolia
+# The docs section with MetaMask AND the faucets. `#what-you-need` exists on the kit 1.0 page and
+# on the 2.0 page alike, so this link works before and after the new page ships.
+WALLET_HELP=https://docs.ekka.ai/kits/wallet-agent/#what-you-need
+AMOUNT_WEI=1000000000000000               # 0.001 test ETH
+AMOUNT_ETH=0.001
+FLOOR_ETH=0.01                            # the rule keeps at least this much
+FLOOR_WEI=10000000000000000
+GAS=21000                                 # a plain payment always uses exactly this much
 DOCS=https://docs.ekka.ai
-KIT_DOC=$DOCS/kits/wallet-agent/
-SIGN_PAGE=${SIGN_PAGE:-$DOCS/kits/wallet-agent/sign.html}   # the same file as sign.html here, hosted so the link is clickable
+KIT_DOC=https://github.com/ekka-labs/kits/tree/main/wallet-agent
 HERE=$(cd "$(dirname "$0")" && pwd)
+# Work inside the kit's folder, so the command a person is shown is the command that runs.
+cd "$HERE"
 STATE="$HERE/.demo-state"
-MODE=${1:-setup}                # setup (default) | steps | commands | try | why
+VIEWD="$HERE/.view"
+MODE=${1:-setup}                # setup (default) | steps | commands | why | view
 
 # ---------------------------------------------------------------- colors, only on a terminal
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -27,668 +41,772 @@ if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
 else
   B=""; D=""; G=""; Y=""; R=""; C=""; N=""
 fi
-# Text rolls out one line at a time, so a change on screen is seen as it happens. ROLL=0 turns it off.
 ROLL=${ROLL:-0.04}
 say()   { printf '%s\n' "$*"; [ "$ROLL" = 0 ] || sleep "$ROLL"; }
 head_() { say ""; say "  ${B}$1${N}"; say "  ${D}$(printf '%*s' "${#1}" '' | tr ' ' '-')${N}"; }
 ok()    { say "  ${G}✔${N} $*"; }
 note()  { say "      ${D}$*${N}"; }
-# ⭐ A COMMAND GETS AIR. Owner's standing rule for every kit: a line somebody is
-# meant to read and type is surrounded by blank lines so it reads as its own
-# thing, not as another sentence in a paragraph.
+# A command gets air: a line somebody is meant to read and type has blank lines around it.
 cmd()   { say ""; say "      ${C}$*${N}"; say ""; }
-learn() { say "      ${D}Learn more:${N} ${C}$*${N}"; }
 stop()  { say ""; say "  ${R}✖ Stopped.${N} $1"; say "    $2"; say ""; exit 1; }
 run()   { $EKKA $EKKA_FLAG "$@"; }
-# Answers come from the terminal, opened once as fd 3. OPEN_SH_INPUT=<file> rehearses the
-# script itself with canned answers.
+EK="$EKKA${EKKA_FLAG:+ $EKKA_FLAG}"
+# Answers come from the terminal even when the script is piped. OPEN_SH_INPUT=file rehearses with canned answers.
 if [ -n "${OPEN_SH_INPUT:-}" ]; then exec 3<"$OPEN_SH_INPUT"
 elif ( : </dev/tty ) 2>/dev/null; then exec 3</dev/tty
 else exec 3</dev/null; fi
-ask()   { printf "  ${Y}%s${N} " "$1"; read -r REPLY <&3 || REPLY=""; }
-wait_enter() { printf "  ${Y}%s${N} " "$1"; read -r REPLY <&3 || REPLY=q; case "$REPLY" in q|Q) say ""; say "  Stopped. Pick up again with: ./open.sh steps"; say ""; exit 0 ;; esac; }
-OUTF=$(mktemp); trap 'rm -f "$OUTF" "$OUTF.rc"' EXIT
-
-# Output streams to the screen as it happens (a run can take a while; a silent screen looks
-# hung) and is kept in $OUTF for the explanation that follows.
-show_run() {
-  say ""
-  say "      ${D}──── running ─────────────────────────────────────────────────────────────${N}"
-  # The exit status crosses the pipe through a file. Under set -e a failing command would end the
-  # brace group before the status was written, and a stale file from the last run would read as 0:
-  # a grant that failed with a 503 was reported "Allowed" and the walk went on. So clear the file
-  # first, and write the status on both branches, where a failure is handled and set -e stays quiet.
-  RC=0; rm -f "$OUTF.rc"
-  { sh -c "$1" 2>&1 && echo 0 >"$OUTF.rc" || echo "$?" >"$OUTF.rc"; } | tee "$OUTF" | while IFS= read -r line; do
-    case "$line" in
-      "") say "" ;;
-      ✓*) say "      ${G}$line${N}" ;;
-      *✗*|*refused*|*failed*|*denied*|*DENIED*|*ERROR*|*error*|*expired*) say "      ${R}$line${N}" ;;
-      *) say "      $line" ;;
+# A timestamped trace of every key read and every wait, so a walk that ever sticks shows WHERE.
+trace() { mkdir -p "$VIEWD" 2>/dev/null && printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >> "$VIEWD/trace.log" 2>/dev/null; return 0; }
+ask()   { printf "  ${Y}%s${N} " "$1"; trace "waiting for a key: $1"; read -r REPLY <&3 || REPLY=""; trace "got: ${REPLY:-Enter}"; }
+wait_enter() { printf "  ${Y}%s${N} " "$1"; trace "waiting for a key: $1"; read -r REPLY <&3 || REPLY=q; trace "got: ${REPLY:-Enter}"; case "$REPLY" in q|Q) say ""; say "  Stopped. Inspect the saved attempt with: ./open.sh steps"; say ""; exit 0 ;; esac; }
+OUTF=$(mktemp)
+# ONE WALK PER FOLDER. Two walks share one saved state and one payment number, and each would act
+# on the other's half-finished attempt. A lock whose process is gone is stale and is taken over.
+LOCK="$HERE/.walk.lock"; HAVE_LOCK=""
+take_lock() {
+  if [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK" 2>/dev/null)" 2>/dev/null; then
+    OTHER=$(cat "$LOCK")
+    say ""; say "  ${Y}Another walk is already running in this folder${N} (process $OTHER)."
+    ask "If you left it behind, press t to stop it and start fresh. [t/N]"
+    case "$REPLY" in
+      t|T) kill "$OTHER" 2>/dev/null || true; sleep 1; trace "took over from process $OTHER"
+           say "  Stopped the old walk." ;;
+      *)   say "  Nothing was changed. Finish the other walk in its own window."; say ""; exit 1 ;;
     esac
-  done
-  RC=$(cat "$OUTF.rc" 2>/dev/null || echo 0)
-  say "      ${D}──── done ────────────────────────────────────────────────────────────────${N}"
-  say ""
+  fi
+  echo $$ > "$LOCK"; HAVE_LOCK=1
 }
+trap 'rm -f "$OUTF" "$OUTF.rc" "$OUTF.show"; [ -n "$HAVE_LOCK" ] && rm -f "$LOCK"; [ -n "${SPIN_PID:-}" ] && kill "$SPIN_PID" 2>/dev/null; true' EXIT
+trap 'trace "terminal hung up"; exit 129' HUP
 
-# Step 1 is the first thing a person watches succeed. If it does not, the walkthrough stops here:
-# going on to step 2 would show a refusal nobody can tell apart from a broken setup.
+# The evidence file and its read-only page. A failure to write evidence never stops the walk,
+# and never counts as a pass: the page shows only what was written.
+vw() { "$HERE/bin/view" "$VIEWD" "$@" >/dev/null 2>&1 || true; }
+
+# The command a step runs, as one short dim line: the plan's name, not its every input.
+runs() {
+  if [ -n "${VERBOSE:-}" ]; then cmd "$1"; return; fi
+  short=$(printf '%s' "$1" | sed -E 's/(plan run [^ ]+).*/\1/; s/(grant revoke) .*/\1/; s/(grant add) .*/\1/; s/^[^ ]*ekka( --[a-z]+)? /ekka /')
+  say "      ${D}runs: $short${N}"
+}
+# ONE way to show a wait: a line naming what is happening, with moving dots, on a terminal only.
+# `|| true` is not decoration: `wait` on a killed job returns 143, and under `set -e` that ended
+# the WHOLE KIT the first time a wait finished (found by a real-terminal walk of the Financial Kit).
+SPIN_PID=""
+spin_start() {
+  [ -t 1 ] && [ -z "${VERBOSE:-}" ] || return 0
+  ( i=0; while :; do printf '\r  %s%-3s ' "$1" "$(printf '%*s' $((i % 4)) '' | tr ' ' '.')"; i=$((i + 1)); sleep 0.4; done ) &
+  SPIN_PID=$!
+}
+spin_stop() {
+  [ -n "$SPIN_PID" ] || return 0
+  kill "$SPIN_PID" 2>/dev/null || true; wait "$SPIN_PID" 2>/dev/null || true; SPIN_PID=""
+  printf '\r%74s\r' ""
+}
+item_start() { ITEM="$1"; trace "setup: $1"; spin_start "$1"; }
+item_done()  { spin_stop; ok "$ITEM"; }
+busy() {  # message  command
+  if [ -t 1 ] && [ -z "${VERBOSE:-}" ]; then
+    spin_start "$1"; trace "busy: $1"; quiet "$2"; trace "done: $1 (rc=$RC)"; spin_stop
+  else
+    quiet "$2"
+  fi
+}
+quiet() { RC=0; sh -c "$1" > "$OUTF" 2>&1 || RC=$?; }
+show_failure() { sed 's/^/      /' "$OUTF" | while IFS= read -r l; do say "${R}$l${N}"; done; }
+
 stop_walk() {
+  # ⛔ A STOP NEVER LEAVES A SIGN PERMISSION BEHIND. While one lasts, the agent may sign ANY
+  # payment with this key, so a walk that stops after step 2 gave it takes it back first.
+  if [ -n "${SIGN_GRANT_ID:-}" ] && [ -n "${SIGN_INTENT:-}" ]; then
+    spin_stop
+    if run gate grant revoke "$SIGN_GRANT_ID" >/dev/null 2>&1; then
+      SIGN_GRANT_ID=""; SIGN_INTENT=""; save_state 2>/dev/null || true
+      say "      The sign permission was taken back, so nothing more can be signed."
+    else
+      say "      ${R}The sign permission could not be taken back for you.${N} Do it now:"
+      cmd "$EK gate grant revoke $SIGN_GRANT_ID"
+    fi
+  fi
+  vw render
   say ""
-  say "  ${R}✖ The walkthrough has stopped before step 2.${N} Step 1 has to succeed first, so that the refusal"
-  say "    in step 2 means what it says. Fix the reason above, then pick up again with:  ${C}./open.sh steps${N}"
+  say "  ${R}✖ The walkthrough has stopped.${N} Each step has to mean what it says before the next one can."
+  say "    Inspect the saved attempt with:  ${C}./open.sh steps${N}     The evidence page:  ${C}$VIEWD/view.html${N}"
   say ""
   exit 1
 }
 
-# When a run did not complete, say the next thing to do in plain words.
 explain_failure() {
   say "      ${R}The plan did not run.${N}"
   if grep -q "GOVERN_AUTH_REJECTED" "$OUTF"; then
     say "      EKKA could not authenticate the Enclave. The action's permissions were not evaluated."
-    if grep -q "SESSION_LEASE_EXPIRED" "$OUTF"; then
-      say "      The reason: the Enclave's session with EKKA had expired. The Enclave opens a new one on"
-      say "      its own; the Enclave window shows runnerSessionReauthenticated when it has."
-    fi
   elif grep -q "session expired" "$OUTF"; then
-    say "      Your sign-in on this machine expired (it renews itself; this time it could not). Sign in"
-    say "      again, then come back:   ${C}ekka login --email <your email>${N}   then   ${C}./open.sh steps${N}"
+    say "      Your sign-in on this machine expired. Sign in again, then come back:"
+    cmd "$EK login --email <your email>    then    ./open.sh steps"
   elif grep -q "credit_exhausted" "$OUTF"; then
     say "      Your organization has no EKKA credit yet. Reply to the email you were sent and name"
     say "      your organization (${B}$ORG${N}); it is one command on our side. Then ${C}./open.sh steps${N}"
-  elif grep -qE "GOVERN_HTTP_ERROR|50[234]" "$OUTF"; then
-    say "      EKKA's server did not answer in time. Nothing ran. Wait a minute and try again:"
+  elif grep -q "USAGE_CEILING_EXCEEDED" "$OUTF"; then
+    # Measured on prod 2026-09-25: a daily run limit answers HTTP 429 too, and used to be told as
+    # "EKKA is not answering", which sends a person to wait for an outage that is not happening.
+    say "      Your organization has used all of today's EKKA runs (its daily limit). Nothing was changed."
+    say "      It resets at the start of the next day (UTC), or an admin raises it:  ${C}$EK org limits set${N}"
+  elif grep -qE "answered 429|Too many requests" "$OUTF"; then
+    say "      The Sepolia service is busy: its free tier takes only a few requests every few minutes."
+    say "      Nothing changed. Wait a few minutes, then:  ${C}./open.sh steps${N}"
+  elif grep -qE "GOVERN_HTTP_ERROR|50[234]|52[0-9]|unreachable" "$OUTF"; then
+    say "      EKKA is not answering right now. Nothing else was changed. Try again in a few minutes:"
     cmd "./open.sh steps"
   else
     say "      The red line above names the reason. Fix it, then run the steps again:  ${C}./open.sh steps${N}"
   fi
 }
 
-# A grant, one field per line, each one explained. What runs is the one-line form; this is the reading form.
-explain_grant() {  # type instance resource capability what-it-means [ttl]
-  g() { printf "        ${C}%-13s %-40s${N} ${D}%s${N}\n" "$1" "$2" "$3"; [ "$ROLL" = 0 ] || sleep "$ROLL"; }
-  say "      ${C}ekka gate grant add \\${N}"
-  g "--agent"      "$AGENT" "who: the agent this permission belongs to"
-  g "--type"       "$1"     "which kind of gate: $( [ "$1" = api ] && echo "a website call" || echo "the vault" )"
-  g "--instance"   "$2"     "where: that gate on your Enclave, and no other machine"
-  g "--resource"   "$3"     "what: $5"
-  g "--capability" "$4"     "which action: $( [ "$4" = api.read ] && echo "read. Not write, not delete" || echo "sign 32 bytes. Not read, not export" )"
-  [ -n "${6:-}" ] && g "--ttl" "$6" "for how long: $6 seconds, then it is gone by itself"
-  g "--no-fingerprint" "" "keep working if the site's description is edited. Safe here: it is your own read-only entry"
+refused_by_ekka() { grep -q RESOURCE_GRANT_DENIED "$OUTF"; }
+plan_completed()  { grep -q "✓ Plan completed" "$OUTF"; }
+out_path()        { grep -oE 'output is at .*' "$OUTF" | sed 's/output is at //' | tail -1 || true; }
+run_id()          { grep -oE 'run [0-9a-f-]{36}' "$OUTF" | head -1 | cut -c5- || true; }
+field()           { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=d.get(sys.argv[2]); print("" if v is None else v)' "$1" "$2" 2>/dev/null || true; }
+short()           { printf '%s…%s' "$(printf '%s' "$1" | cut -c1-6)" "$(printf '%s' "$1" | rev | cut -c1-4 | rev)"; }
+eth_of()          { python3 -c 'import sys; print("%.6f" % (int(sys.argv[1]) / 1e18))' "$1" 2>/dev/null || echo "?"; }
+save_state() {
+  cat > "$STATE" <<EOF
+ORG='$ORG'
+AGENT='$AGENT'
+KEY='$KEY'
+AINST='$AINST'
+SINST='$SINST'
+LLM='$LLM'
+MODEL='$MODEL'
+API_ROW='$API_ROW'
+ADDRESS='$ADDRESS'
+PAYEE='$PAYEE'
+BAL_VER='$BAL_VER'
+SNT_VER='$SNT_VER'
+FEE_VER='$FEE_VER'
+DEC_VER='$DEC_VER'
+SIG_VER='$SIG_VER'
+SND_VER='$SND_VER'
+DECISION='${DECISION:-}'
+SIGN_GRANT_ID='${SIGN_GRANT_ID:-}'
+SIGN_INTENT='${SIGN_INTENT:-}'
+TX_HASH='${TX_HASH:-}'
+TX_OUTCOME='${TX_OUTCOME:-}'
+EOF
 }
 
-# A step: title, what is about to happen, the exact line. Enter runs it. s skips, q stops.
-step() {
-  say ""; say "  ${Y}▶ $1${N}"; shift
-  while [ $# -gt 1 ]; do say "      $1"; shift; done
-  cmd "$1"
-  printf "  ${Y}Enter runs it. s skips it, q stops here.${N} "
-  read -r REPLY <&3 || REPLY=q; printf "\r%60s\r" ""
-  case "$REPLY" in q|Q) say ""; say "  Stopped. Pick up again with: ./open.sh steps"; say ""; exit 0 ;; s|S) return 1 ;; esac
-  show_run "$1"
+# Reads one fixed plan and sets P to the saved answer's path. Stops the walk on a failure.
+read_plan() {  # label  plan
+  busy "$1" "$EK plan run $2"
+  plan_completed || { show_failure; explain_failure; stop_walk; }
+  P=$(out_path)
 }
 
-# The balance of one address, read straight from the public website (no agent, no EKKA). Prints
-# the figure in ETH, "0" for an address the network has never seen, or "?" if the site is unreachable.
-site_balance() {
-  command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 || { echo "?"; return; }
-  curl -fsS -m 15 "$BALANCE_SITE/api/v2/addresses/$1" 2>/dev/null | python3 -c '
-import sys, json
-try:
-    d = json.load(sys.stdin); raw = d.get("coin_balance")
-    print("0" if raw is None else f"{int(raw) / 1e18:.6f}")
-except Exception:
-    print("?")' 2>/dev/null || echo "?"
+# ⛔ A LOW BALANCE NEVER REACHES THE AI. If the wallet cannot pay the invoice, the fee and still keep
+# the rule's floor, the AI would rightly say hold and the walk would show nothing. So the kit stops
+# BEFORE the AI is asked, at setup and again at step 1, and says how to get free test ETH.
+funds_check() {  # output.json of a balance read. Sets BAL_WEI and BAL_ETH, or stops.
+  BAL_WEI=$("$HERE/bin/wallet" wei "$1"); BAL_ETH=$("$HERE/bin/wallet" balance "$1")
+  NEED_WEI=$((AMOUNT_WEI + FLOOR_WEI + GAS * 20000000000))
+  [ "$BAL_WEI" -ge "$NEED_WEI" ] && return 0
+  say "  ${Y}Your wallet holds $BAL_ETH test ETH.${N} The walk needs at least $(eth_of "$NEED_WEI"): the $AMOUNT_ETH"
+  say "  payment, the network fee, and the $FLOOR_ETH the rule keeps. Test ETH is free. One minute:"
+  say "    1. Open ${C}$FAUCET${N}"
+  say "    2. Sign in with a Google account, paste $(short "$ADDRESS"), click ${B}Receive 0.05 Sepolia ETH${N}."
+  say "    3. Wait about a minute, then run ${C}./open.sh steps${N}"
+  say "    ${D}If Google says no (daily limit):${N} ${C}$FAUCET2${N}"
+  say "  Step by step, with MetaMask:  ${C}$WALLET_HELP${N}"
+  say "  Nothing was asked of the AI, and nothing was signed."
+  stop_walk
 }
 
-faucet_help() {
-  say "      Test ETH is free. One minute:"
-  say "      1. Open ${C}$FAUCET${N}"
-  say "      2. Sign in with a Google account, paste your address, click ${B}Receive 0.05 Sepolia ETH${N}."
-  say "      3. Wait about a minute. MetaMask shows 0.05 SepoliaETH on that account."
-  say "      ${D}If Google refuses (daily quota):${N} ${C}https://www.alchemy.com/faucets/ethereum-sepolia${N}"
-  learn "$KIT_DOC#test-eth"
+# Build the payment: the next payment number, today's fee cap, 0.001 test ETH to the payee.
+# Writes pay.json and sets DIGEST, the 64 characters the Enclave will sign. Sets NONCE.
+build_payment() {  # [nonce]
+  if [ -n "${1:-}" ]; then NONCE=$1
+  else read_plan "Reading your wallet's payments" "$SNT_VER"; NONCE=$("$HERE/bin/wallet" nonce "$P"); fi
+  read_plan "Reading the network's fees" "$FEE_VER"
+  set -- $("$HERE/bin/wallet" fees "$P"); MAXFEE=${1:-}; TIP=${2:-}
+  printf '%s' "$MAXFEE" | grep -qE '^[0-9]+$' || { say "      ${R}The network did not say what fees are today.${N} Try again in a minute."; stop_walk; }
+  cat > "$HERE/pay.json" <<EOF
+{"chain_id": $CHAIN_ID, "nonce": $NONCE, "max_priority_fee_per_gas": $TIP, "max_fee_per_gas": $MAXFEE, "gas": $GAS, "to": "$PAYEE", "value": $AMOUNT_WEI, "data": "0x"}
+EOF
+  DIGEST=$("$HERE/bin/tx" digest "$HERE/pay.json") || { say "      ${R}The payment could not be built.${N}"; stop_walk; }
+  FEE_CAP_WEI=$((GAS * MAXFEE))
 }
 
-# Pull a field out of a run's saved output file (the path `plan run` prints).
-field_of() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); v=d.get(sys.argv[2]); print("" if v is None else v)' "$1" "$2" 2>/dev/null || true; }
+# The decision of the run just shown, from what EKKA recorded. Sets DECISION.
+read_verdict() {
+  RID=$(run_id)
+  DECISION=no_verdict
+  [ -n "$RID" ] || { explain_failure; stop_walk; }
+  run run show "$RID" > "$OUTF.show" 2>&1 || true
+  DECISION=$("$HERE/bin/show-verdict" "$OUTF.show" --word 2>/dev/null || echo no_verdict)
+  WHY=$("$HERE/bin/show-verdict" "$OUTF.show" | sed -n 's/^explanation   //p')
+  case "$DECISION" in
+    pay)  say "      ${B}The AI decides: pay.${N}" ;;
+    hold) say "      ${B}The AI decides: hold.${N}" ;;
+    invalid_model_output) say "      ${B}The AI did not answer clearly with pay or hold.${N}" ;;
+  esac
+  [ -n "$WHY" ] && printf 'Its reason: %s\n' "$WHY" | fold -s -w 88 | while IFS= read -r l; do say "      $l"; done
+  if [ "$DECISION" = no_verdict ]; then
+    say "      ${R}The AI gave no answer: the run stopped for a reason that is not the AI's.${N}"
+    explain_failure; stop_walk
+  fi
+  vw set decision "$DECISION"; vw set explanation "$WHY"
+}
+
+# Sign the recorded payment with the permission live, check the key is this wallet's, assemble.
+# Sets RAW and TX_HASH. Refuses to go on if the Enclave's key belongs to another address.
+signed_payment() {  # output.json of a sign step
+  SIG=$(field "$1" signature); RID_=$(field "$1" recovery_id); PUB=$(field "$1" public_key); SIGNED=$(field "$1" digest)
+  [ "$SIGNED" = "$DIGEST" ] || { say "      ${R}The Enclave signed something other than this payment.${N} Nothing is sent."; stop_walk; }
+  WHO=$("$HERE/bin/tx" address "$PUB" 2>/dev/null || echo unknown)
+  WANT=$(printf '%s' "$ADDRESS" | tr 'A-F' 'a-f')
+  if [ "$WHO" != "$WANT" ]; then
+    say "      ${R}The key in your Enclave belongs to a different wallet${N} ($(short "$WHO")), not $(short "$ADDRESS")."
+    say "      A payment signed with it would come from that other wallet, so the kit sends nothing."
+    say "      Store the private key of $(short "$ADDRESS") again:  ${C}$EK secret remove $KEY${N}   then   ${C}./open.sh${N}"
+    stop_walk
+  fi
+  ok "Signed by the Enclave. The signature belongs to your wallet, $(short "$ADDRESS")."
+  OUT=$("$HERE/bin/tx" assemble "$HERE/pay.json" "$SIG" "$RID_") || { say "      ${R}The signed payment could not be assembled.${N}"; stop_walk; }
+  RAW=$(printf '%s' "$OUT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["raw_tx"])')
+  TX_HASH=$(printf '%s' "$OUT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["hash"])')
+  save_state
+}
+
+# Send the signed payment. The SAME signed payment may be sent any number of times: it carries its
+# payment number, so the network takes it once and refuses every copy. That is why a busy service
+# or a lost answer is retried with the same bytes, and never signed again.
+send_payment() {
+  TRY=0
+  while :; do
+    TRY=$((TRY + 1))
+    busy "Sending your payment to the network" "$EK plan run $SND_VER --input raw_tx=$RAW"
+    if plan_completed; then
+      ANS=$("$HERE/bin/wallet" sent "$(out_path)" 2>/dev/null || echo "error=unreadable")
+      case "$ANS" in
+        result=*) TX_OUTCOME=sent; save_state; ok "The network took the payment."; return 0 ;;
+        *"already known"*|*"nonce too low"*) TX_OUTCOME=sent; save_state; ok "The network already has this payment."; return 0 ;;
+        *) say "      ${R}The network refused the payment:${N} ${ANS#error=}"
+           case "$ANS" in *[Ii]nsufficient*) say "      Your wallet does not hold enough test ETH for it. Get more, free:  ${C}$FAUCET${N}" ;; esac
+           TX_OUTCOME=refused; save_state; stop_walk ;;
+      esac
+    fi
+    if grep -qE "answered 429|Too many requests" "$OUTF" && [ "$TRY" -lt 4 ]; then
+      say "      ${Y}The Sepolia service is busy right now.${N} Its free tier takes only a few sends every few"
+      say "      minutes. Nothing was sent. Sending again is safe: it is the same signed payment."
+      wait_enter "Wait a minute, then press Enter to send it again."
+      continue
+    fi
+    say "      ${Y}No clear answer.${N} The kit looks the payment up by its hash instead of guessing:"
+    lookup_payment 3
+    [ "$PAY_STATE" != pending ] && [ "$PAY_STATE" != unknown ] && { TX_OUTCOME=sent; save_state; return 0; }
+    say "      ${R}Still not clear.${N} Nothing more is sent. Look it up yourself:  ${C}$EXPLORER/tx/$TX_HASH${N}"
+    TX_OUTCOME=uncertain; save_state; stop_walk
+  done
+}
+
+# Look the payment up by its hash until the network names a final status. Sets PAY_STATE
+# (ok | error | pending | unknown) and PAY_FEE (wei).
+lookup_payment() {  # tries
+  "$HERE/bin/write-plans" lookup "$HERE" "$AGENT" "$AINST" "$API_ROW" "$TX_HASH" >/dev/null
+  LV=$(run plan create "$HERE/wallet.lookup.json" 2>&1 | grep -oE "[a-z0-9-]+\.wallet\.lookup@[0-9.]+" | head -1 || true)
+  [ -n "$LV" ] || { PAY_STATE=unknown; return 0; }
+  PAY_STATE=pending; PAY_FEE=0; N_=0
+  spin_start "Waiting for the network to confirm it"
+  while [ "$N_" -lt "$1" ]; do
+    N_=$((N_ + 1)); quiet "$EK plan run $LV"
+    if plan_completed; then
+      set -- "$1" $("$HERE/bin/wallet" payment "$(out_path)" 2>/dev/null || echo pending)
+      case "${2:-pending}" in ok|error) PAY_STATE=$2; PAY_FEE=${3:-0}; break ;; esac
+    fi
+    sleep "${LOOKUP_WAIT:-5}"
+  done
+  spin_stop
+}
 
 why() {
 head_ "Questions people ask at this point, and how to check the answer yourself"
-say "  ${B}Where is my key?${N}  Encrypted, inside your Enclave, in ~/.ekka/vault. Look: the file names"
-say "  are scrambled and the contents are unreadable. No command prints it back."
-say ""
-say "  ${B}What can the agent reach on the internet?${N}  One public website that reports wallet"
-say "  balances, read only. See exactly what it offers: ${C}ekka api describe $API_ROW${N}"
-say ""
-say "  ${B}Can it read a different wallet?${N}  No. The plan names your wallet as a fixed value and has"
-say "  no input for another. Read it: ${C}cat $HERE/wallet.balance.json${N}"
-say ""
-say "  ${B}Can the agent give itself permission?${N}  Only your signed-in session can grant. In this"
-say "  walkthrough you type the agent's lines yourself; to see the agent locked out, run it as its"
-say "  own user on this machine (What else to try, item 1). It cannot read your session."
-say ""
-say "  ${B}What does EKKA's server see?${N}  That a step ran, on which key or website, allowed or"
-say "  refused, and a fingerprint of the result. Never your key, your balance or a signature."
-say ""
-say "  ${B}What if I edit a plan?${N}  A plan is a version, frozen when created. Editing makes a new"
-say "  version, which starts with no grant."
-say ""
-learn "$KIT_DOC"
-say ""
-}
-
-try_more() {
-head_ "What else to try"
-say "  1. Give the agent its own user and hand it the lines: ${C}sudo useradd -m agent${N}, then as agent"
-say "     run ${C}./open.sh commands${N}. It cannot read your session: every grant attempt says not signed in."
-say "  2. Turn wifi off, ${C}ekka receipts verify${N}: every record checks out with no server at all."
-say "  3. Point the agent at another wallet: ${C}ekka plan run $BAL_VER --input address=0x…${N}"
-say "     Your wallet comes back. The plan has no such input; read it: ${C}cat $HERE/wallet.balance.json${N}"
-say "  4. Change one character in wallet.balance.json, ${C}ekka plan create $HERE/wallet.balance.json${N}:"
-say "     a new version, with no grant. Refused until you allow it."
-say "  5. Hand ${C}./open.sh commands${N} to your own AI and tell it to get the money. Read the trail:"
-say "     ${C}ekka receipts list${N}"
-say "  6. ${C}ekka secret list${N}, then ${C}ls ~/.ekka/vault${N}: the key's name, and scrambled files."
-learn "$KIT_DOC#what-else-to-try"
-say ""
-}
-
-yours() {
-head_ "This agent is yours"
-say "  ${B}$AGENT${N} lives in your organization. Its two plans are the files you just read."
-say "  Add a third: copy wallet.balance.json, point it at any website with an API, create it."
-say "  The new version starts with no grant. It is refused until you allow it, as in step 2."
-say "  When it is good, ${C}ekka agent publish $AGENT${N} lets other organizations install it;"
-say "  they see every permission it asks for before they say yes."
-learn "$DOCS/connect/your-own-api/"
-say ""
-say "  ${D}Reprint: ./open.sh steps (run again)  ./open.sh try  ./open.sh why  ./open.sh commands${N}"
-say ""
+say "  ${B}What gets set up in my organization?${N} One catalog entry, ${B}$API_ROW${N}: read your wallet"
+say "  and send a payment that is already signed. One agent, ${B}$AGENT${N}, and its plans, as files here."
+say "  Three standing permissions: read the network, send an already-signed payment, ask the AI."
+say "  ${B}None of them can sign.${N} Only you can allow that, in step 2."
+cmd "$EK gate grant list --agent $AGENT"
+say "  ${B}Where is my private key?${N} Encrypted in your Enclave's vault on this computer. The Enclave"
+say "  signs with it and never hands it out: there is no command that reads it back."
+cmd "$EK secret list"
+say "  ${B}What exactly did the AI see?${N} The file ${B}prompt.txt${N} in this folder, and nothing else:"
+say "  the rule, the invoice, your approved list and your balance. EKKA's control plane is sent it"
+say "  to decide yes or no, and the AI gate carries it to the model, a third party, not EKKA."
+say "  ${B}Can a strange answer pay?${N} No. Only the exact words pay or hold cross to EKKA, and only"
+say "  pay leads to the signing step. Anything else goes to the plan's default, which fails."
+cmd "cat wallet.decide.json"
+say "  ${B}What does the sign permission NOT limit?${N} EKKA sees a 32-byte fingerprint, not the payee or"
+say "  the amount. While the permission lasts, the agent may sign ANY payment with this key."
+say "  That is why you choose how many minutes, and why the kit takes it back in step 3."
+say "  ${B}Could it reach real money?${N} No. The kit builds payments for the Sepolia test network only"
+say "  (network id $CHAIN_ID). A Sepolia signature is refused on every other network."
+say "  ${B}Is the record real?${N} Each governed step produces signed evidence binding the authorized scope"
+say "  to hashes of its input and output. Check it on this computer:"
+cmd "$EK receipts verify"
 }
 
 commands() {
-head_ "The lines, to run by hand or hand to your AI"
-cmd "$BAL_GRANT"
-cmd "ekka plan run $BAL_VER"
-cmd "$HERE/bin/show-balance"
-cmd "ekka plan run $SIG_VER --input digest=<64 hex characters> --input alg=secp256k1"
-cmd "ekka receipts verify"
-say ""
-say "  To move money, as the human (the grant lasts ten minutes):"
-cmd "$SIG_GRANT"
-cmd "$SIGN_PAGE?plan=$SIG_VER&address=$ADDRESS&to=$ADDRESS"
-cmd "ekka gate grant list      then      ekka gate grant revoke <id>"
-say ""
+head_ "Operator commands: keep administration with the human"
+say "  These use your session. They are not a restricted AI execution interface."
+cmd "$EK gate grant list --agent $AGENT"
+cmd "$EK plan run $BAL_VER"
+say ""; say "      ${C}$EK plan run $DEC_VER \\${N}"; say "      ${C}    --input user_message=@prompt.txt --input digest=\$(bin/tx digest pay.json)${N}"
+say ""; say "      ${C}$EK gate grant add --agent $AGENT --type secret --instance $SINST \\${N}"
+say "      ${C}    --resource keys/$KEY --capability secret.vault.sign \\${N}"
+say "      ${C}    --ttl 600 --no-fingerprint${N}"; say ""
+cmd "$EK plan run $SIG_VER --input digest=\$(bin/tx digest pay.json)"
+cmd "$EK receipts verify"
+say "  ${B}To let an AI run these plans and nothing else${N}: publish the plans and give the AI the session"
+say "  of an organization ${B}member${N}. A member may dispatch plans and may NOT issue or revoke a grant."
+cmd "$EK org members invite ai-operator@example.com --role member"
 }
 
-# ---------------------------------------------------------------- the three steps
+# ⛔ AN UNRESOLVED ATTEMPT IS NEVER REPLAYED. A sign permission may still exist, or a payment was
+# signed and its fate is not known: then every mode inspects, and nothing is signed again.
+unresolved_attempt() {
+  [ -n "${SIGN_INTENT:-}" ] && return 0
+  [ "${TX_OUTCOME:-}" = uncertain ] && return 0
+  return 1
+}
+recover() {
+  head_ "Inspect the saved attempt; do not sign it again"
+  [ -n "${TX_HASH:-}" ] && say "  The last signed payment: ${C}$EXPLORER/tx/$TX_HASH${N}"
+  say "  Sending that same payment again is safe (it can be taken once), signing a new one is not done here."
+  [ -n "${SIGN_GRANT_ID:-}" ] && { say "  A sign permission may still be live. Take it back:"; cmd "$EK gate grant revoke $SIGN_GRANT_ID"; }
+  cmd "$EK gate grant list --agent $AGENT"
+  say "  When no sign permission is left, run ${C}./open.sh steps${N} again. To start over:  ${C}rm .demo-state${N}"
+}
+
+# ================================================================ the four steps
+# The AI is asked ONCE. Its recorded pay is then governed three times: refused without
+# permission, signed and sent with it, refused again after the permission is taken back.
 steps() {
-head_ "Three steps"
-say "  Each one shows the exact line before it runs. ${B}This script runs it${N}, shows the real output,"
-say "  then says what happened. ${D}s skips a step, q stops. In this walkthrough you type the agent's${N}"
-say "  ${D}lines yourself; the permission check is the same either way.${N}"
-
-# ---- 1 allow one read, the agent reads
-say ""; say "  ${Y}▶ 1. You allow one thing. The agent reads the balance.${N}"
-say "      A grant is one row with a few fields. Read this one field by field; it says:"
-say "      ${B}$AGENT${N} may ${B}read${N} ${B}apis/$API_ROW${N}, on your Enclave. Nothing else."
-explain_grant api "$AINST" "apis/$API_ROW" api.read "one website in your organization's catalog, the balance site"
-printf "  ${Y}Enter runs it. s skips it, q stops here.${N} "
-read -r REPLY <&3 || REPLY=q; printf "\r%60s\r" ""
-case "$REPLY" in q|Q) say ""; say "  Stopped. Pick up again with: ./open.sh steps"; say ""; exit 0 ;; esac
-if [ "$REPLY" != s ] && [ "$REPLY" != S ]; then
-  show_run "$BAL_GRANT"
-  if [ "$RC" != 0 ]; then
-    say "      ${R}The grant was not created.${N} The red line above names the reason."
-    stop_walk
-  fi
-  say "      ${B}Allowed.${N} One row on EKKA's server. When ${B}$AGENT${N} asks for this one thing the"
-  say "      answer is yes; for anything else it is still no."
-  say ""
-  say "      Now the agent runs its plan: read the balance of ${B}$SHORT${N} from the website."
-  cmd "ekka plan run $BAL_VER"
-  wait_enter "Enter runs it."
-  show_run "ekka plan run $BAL_VER"
-  OUT_PATH=$(grep -oE 'output is at .*' "$OUTF" | sed 's/output is at //' | head -1 || true)
-  if grep -q "✓ Plan completed" "$OUTF"; then
-    say "      ${B}The agent read your balance:${N}"
-    show_run "$HERE/bin/show-balance ${OUT_PATH:-}"
-    say "      ${B}What happened:${N} the agent asked to run the plan; EKKA's server checked the grant and"
-    say "      said yes; the Enclave on this machine called the website; the answer was saved here, in"
-    say "      the file named above. That is the whole run."
-    say "      ${D}Privacy, separately: EKKA's server saw that the step ran, the website it used, and a${N}"
-    say "      ${D}fingerprint of the answer (the Content hash line). The number itself stayed here.${N}"
-  else
-    explain_failure
-    stop_walk
-  fi
-  learn "$DOCS/how-governance-works/#what-happens-when-an-agent-acts"
-fi
-
-# ---- 2 sign refused
-if step "2. The agent asks the Enclave to sign. Nobody has allowed this." \
-  "${R}THIS ONE IS MEANT TO FAIL.${N} A refusal here is the step working, not a problem with your setup." \
-  "The second plan asks the Enclave to sign with the key in your vault. There is no grant for it," \
-  "so EKKA should refuse it before it ever reaches your machine. Watch where it stops." \
-  "ekka plan run $SIG_VER --input digest=7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069 --input alg=secp256k1"; then
-  if grep -q RESOURCE_GRANT_DENIED "$OUTF"; then
-    say "      ${B}Refused.${N} The part that matters in the red text: ${B}no Grant covers keys/$KEY (sign)${N}."
-    say "      EKKA's server refused ${B}before${N} the request reached this machine. The Enclave never"
-    say "      saw it; the key was never touched. The refusal itself is now on a signed record."
-    say "      Notice it prints the exact grant line an admin would need. The agent can read that line;"
-    say "      it cannot run it. Only your signed-in session can grant."
-  else
-    say "      ${R}Unexpected.${N} This should have been refused with RESOURCE_GRANT_DENIED, and was not. A"
-    say "      refusal for any other reason is not the governance decision this step demonstrates."
-    explain_failure
-    say ""
-    say "  ${R}✖ The walkthrough has stopped before step 3.${N} Fix the reason above, then:  ${C}./open.sh steps${N}"
-    say ""
-    exit 1
-  fi
-  learn "$DOCS/security/#how-does-ekka-stop-an-agent-before-it-acts"
-fi
-
-# ---- 3 the human moves money, then takes the permission back
-say ""; say "  ${Y}▶ 3. You allow signing, sign once, take it back.${N}"
+save_state
+vw set model_where "the AI gate $LLM, carrying the message to $MODEL, a third party, not EKKA"
+vw set exec_where "your Enclave: signing with keys/$KEY, sending through $API_ROW"
+vw set wallet "$ADDRESS"; vw set payee "$PAYEE"
+vw authority network_read "granted"; vw authority send "granted (only an already-signed payment)"; vw authority sign "not granted"
 say ""
-say "      This is the step that moves test ETH. Five small parts, each explained as it comes:"
-say "      ${D}3a allow  ·  3b build the transaction on a web page  ·  3c the Enclave signs it${N}"
-say "      ${D}3d send it  ·  3e take the permission back, check the records${N}"
+say "  Four steps. Each one shows what it runs, waits for you to press Enter, runs it, and says"
+say "  what happened. ${B}q${N} stops at any point."
+
+# ---- 1. The AI decides, and tries to pay
+say ""; say "  ${Y}▶ Step 1 of 4. The AI reads the invoice, decides, and tries to pay.${N}"
+say "      You have not given it permission to sign yet, so EKKA should stop the payment."
+wait_enter "Enter reads your balance."
+read_plan "Reading your balance" "$BAL_VER"
+funds_check "$P"
+ok "Your wallet holds ${B}$BAL_ETH test ETH${N}. Read from the network just now."
+build_payment
+python3 - "$HERE/inputs.json" <<EOF
+import json; json.dump({"amount_eth": "$AMOUNT_ETH", "payee": "$PAYEE", "for": "September API credits",
+  "approved": ["$PAYEE"], "balance_eth": "$BAL_ETH", "fee_cap_eth": "$(eth_of "$FEE_CAP_WEI")", "floor_eth": "$FLOOR_ETH"},
+  open(__import__("sys").argv[1], "w"))
+EOF
+"$HERE/bin/prompt" "$HERE/inputs.json" "$HERE/prompt.txt" >/dev/null
+[ "$PAYEE" = "$ADDRESS" ] && TO_WHO="$(short "$PAYEE"), your own address" || TO_WHO="$(short "$PAYEE")"
 say ""
-say "  ${Y}3a. Allow signing, for ten minutes.${N}"
-say "      The permission covers exactly one thing: sign with ${B}keys/$KEY${N}. It expires by itself."
-explain_grant secret "$SINST" "keys/$KEY" secret.vault.sign "one named key in your vault; the key itself is never read" 600
-wait_enter "Enter runs it. q stops here."
-show_run "$SIG_GRANT"
-# ☠️ READ THE ID THE WAY THE CLI PRINTS IT. The line is
-#   "To take it back later:  ekka gate grant revoke <uuid>"
-# so the id follows `revoke`, not `grant`. The old pattern looked for hex
-# straight after "grant", found "revoke", matched nothing, and left this empty.
-# The placeholder then went to `sh -c`, where `<` is a redirect: the owner's run
-# died with "Syntax error: end of file unexpected", the revoke never happened,
-# and step 3e then reported the missing refusal as a product failure.
-SIG_GRANT_ID=$(grep -oE 'revoke +[0-9a-f-]{16,}' "$OUTF" | head -1 | awk '{print $2}' || true)
-if [ "$RC" != 0 ]; then
-  say "      ${R}The grant was not created.${N} Read the red line above, then ${C}./open.sh steps${N}"
+say "  ${B}What the AI is sent${N}"
+say "    · The invoice: pay $AMOUNT_ETH test ETH to $TO_WHO, for September API credits."
+say "    · Your rule: pay only if the payee is on your list and at least $FLOOR_ETH test ETH is left."
+say "    · Your balance now: $BAL_ETH test ETH. Your approved list: $(short "$PAYEE")."
+say "    Nothing else: not your private key, not your other payments."
+say ""
+say "  ${B}You control this message.${N} Change the rule in ${C}bin/prompt${N}. EKKA's AI gate carries it to"
+say "  the AI, and EKKA keeps a copy with the run, so you can see later exactly what the AI was told."
+say ""
+printf "  ${Y}Press p to see the full message, or Enter to ask the AI.${N} "
+read -r REPLY <&3 || REPLY=q
+case "$REPLY" in
+  q|Q) say ""; say "  Stopped. Inspect the saved attempt with: ./open.sh steps"; say ""; exit 0 ;;
+  p|P) say ""; sed 's/^/        /' "$HERE/prompt.txt"; say ""; wait_enter "Enter asks the AI." ;;
+esac
+DEC_CMD="$EK plan run $DEC_VER --input user_message=@prompt.txt --input digest=$DIGEST"
+runs "$DEC_CMD"
+busy "Asking the AI" "$DEC_CMD"
+read_verdict
+case "$DECISION" in
+  hold) say "      So nothing is signed: only a pay leads to the signing step. Change the invoice or the"
+        say "      rule in ${C}bin/prompt${N}, then ${C}./open.sh steps${N}."
+        vw event "1. The AI decides" "AI decision (hold)" "decide" "nothing to sign" "not sent"; stop_walk ;;
+  invalid_model_output) say "      So nothing can be signed: only a clear pay can lead to a signature."
+        say "      Ask again with ${C}./open.sh steps${N}."
+        vw event "1. The AI decides" "AI answer unclear" "decide" "no signature" "not sent"; stop_walk ;;
+esac
+# ⛔ THE ONE THING THIS KIT MUST NEVER SEE: a signature with no permission.
+if plan_completed; then
+  say "      ${R}THE ENCLAVE SIGNED WITHOUT YOUR PERMISSION.${N} That must never happen. Nothing was sent."
+  say "      Report this run with the output above: it is a governance failure, not your setup."
+  stop_walk
+fi
+refused_by_ekka || { explain_failure; stop_walk; }
+say "      ${G}${B}EKKA stopped the payment.${N} Your AI agent has no permission to sign, so the Enclave did not"
+say "      sign and nothing was sent."
+say "      ${B}See it yourself:${N} no new payment is on your wallet's page:"
+say "      ${C}$EXPLORER/address/$ADDRESS${N}"
+vw event "1. The AI decides, and is stopped" "AI decision (pay)" "sign the payment" "refused: no permission" "not sent"
+vw render
+
+# ---- 2. You give permission; the AI's payment goes through
+say ""; say "  ${Y}▶ Step 2 of 4. You give the AI permission to sign, for as long as you choose.${N}"
+say "      EKKA sees only a fingerprint of what is signed, not who is paid or how much. So while the"
+say "      permission lasts, your AI agent may sign ANY payment with this key, not only this one."
+say "      That is why you choose how long it lasts. It ends by itself then."
+MINUTES=${PERMIT_MINUTES:-}
+while ! printf '%s' "$MINUTES" | grep -qE '^[1-9][0-9]{0,3}$' || [ "$MINUTES" -gt 1440 ]; do
+  ask "For how many minutes may it sign? [10]"; MINUTES=${REPLY:-10}
+done
+PERMIT="$MINUTES minute"; [ "$MINUTES" = 1 ] || PERMIT="${PERMIT}s"
+say ""
+say "      You are telling EKKA: ${B}your AI agent may sign with your wallet key${N},"
+say "      on this computer only, ${B}for $PERMIT${N}. Nothing else."
+GRANT_SIGN="$EK gate grant add --agent $AGENT --type secret --instance $SINST --resource keys/$KEY --capability secret.vault.sign --ttl $((MINUTES * 60)) --no-fingerprint"
+wait_enter "Enter gives the permission."
+SIGN_INTENT=1; save_state
+busy "Telling EKKA" "$GRANT_SIGN"
+[ "$RC" = 0 ] || { show_failure; say "      ${R}The permission was not given.${N} The red lines above say why."; SIGN_INTENT=""; save_state; stop_walk; }
+SIGN_GRANT_ID=$(grep -oE 'revoke +[0-9a-f-]{16,}' "$OUTF" | head -1 | awk '{print $2}')
+save_state
+vw authority sign "granted for $PERMIT"
+ok "Permission given, for $PERMIT."
+say "      Now the AI's payment from step 1 goes to EKKA again, as the same payment:"
+say "      $AMOUNT_ETH test ETH to $TO_WHO."
+say "      The AI is not asked again. Its decision stands; only your permission changed."
+SIG_CMD="$EK plan run $SIG_VER --input digest=$DIGEST"
+runs "$SIG_CMD"
+wait_enter "Enter signs and sends the payment."
+busy "The Enclave is signing" "$SIG_CMD"
+if ! plan_completed; then
+  if refused_by_ekka; then
+    say "      ${B}Refused: your $PERMIT had already run out.${N} The permission ended exactly when you set it"
+    say "      to, so nothing was signed. Run ${C}./open.sh steps${N} again and give it a little longer."
+    SIGN_INTENT=""; save_state
+  else show_failure; explain_failure; fi
+  stop_walk
+fi
+signed_payment "$(out_path)"
+send_payment
+lookup_payment "${LOOKUP_TRIES:-24}"
+case "$PAY_STATE" in
+  ok)   FEE_ETH=$(eth_of "$PAY_FEE")
+        ok "The network confirmed it: $AMOUNT_ETH test ETH to $TO_WHO."
+        say "      ${B}See it yourself:${N} it is the newest payment on your wallet's page:"
+        say "      ${C}$EXPLORER/address/$ADDRESS${N}"
+        say "      Its hash begins $(printf '%s' "$TX_HASH" | cut -c1-12). The full link is on the evidence page."
+        if [ "$PAYEE" = "$ADDRESS" ]; then
+          say "      Why your balance dropped a little: the network charged a fee of ${B}$FEE_ETH test ETH${N} to carry"
+          say "      it. The $AMOUNT_ETH came back to you, because the example pays you back. Test ETH has no value."
+        else
+          say "      It cost a network fee of ${B}$FEE_ETH test ETH${N}, on top of the $AMOUNT_ETH. Test ETH has no value."
+        fi ;;
+  error) say "      ${R}The network took the payment and it failed there.${N} Your wallet's page says why:"
+         say "      ${C}$EXPLORER/address/$ADDRESS${N}" ;;
+  *)    say "      ${Y}The network has not confirmed it yet.${N} It usually takes about 15 seconds. Watch it:"
+        say "      ${C}$EXPLORER/address/$ADDRESS${N}" ;;
+esac
+vw set tx "$TX_HASH"; vw set tx_status "$PAY_STATE"
+vw event "2. Permission given" "AI decision (pay)" "sign, then send" "allowed ($PERMIT)" "$PAY_STATE"
+vw render
+
+# ---- 3. Take the permission back
+say ""; say "  ${Y}▶ Step 3 of 4. Take the permission back.${N}"
+say "      There is nothing to cancel: a confirmed payment is final. So take the permission back as"
+say "      soon as it has done its one job. You do not have to wait for your $PERMIT to run out."
+[ -n "${SIGN_GRANT_ID:-}" ] || { cmd "$EK gate grant list --agent $AGENT"; stop "The permission's id could not be read, so it cannot be taken back for you." "Take the kit's secret.vault.sign grant back by hand, then ./open.sh steps"; }
+runs "$EK gate grant revoke $SIGN_GRANT_ID"
+wait_enter "Enter takes the permission back."
+busy "Telling EKKA" "$EK gate grant revoke $SIGN_GRANT_ID"
+[ "$RC" = 0 ] || { show_failure; say "      ${R}The permission could not be taken back.${N} Step 4 would prove nothing, so the kit stops here."; stop_walk; }
+ok "Permission taken back."
+SIGN_GRANT_ID=""; SIGN_INTENT=""; save_state
+vw authority sign "revoked"
+vw event "3. Take it back" "you" "take the permission back" "taken back" "final"
+vw render
+
+# ---- 4. The same payment again: stopped
+say ""; say "  ${Y}▶ Step 4 of 4. The AI's payment once more, after you took the permission back.${N}"
+say "      The same payment, as a brand-new one (the next payment number). EKKA should stop it."
+build_payment $((NONCE + 1))
+AGAIN_CMD="$EK plan run $SIG_VER --input digest=$DIGEST"
+runs "$AGAIN_CMD"
+wait_enter "Enter sends the payment."
+busy "The Enclave is asked to sign" "$AGAIN_CMD"
+if refused_by_ekka; then
+  ok "EKKA stopped it. The permission is yours to give, and yours to take back."
+  say "      ${B}See it yourself:${N} only the one payment from step 2 is on your wallet's page:"
+  say "      ${C}$EXPLORER/address/$ADDRESS${N}"
+elif plan_completed; then
+  say "      ${R}THE ENCLAVE SIGNED AFTER YOU TOOK THE PERMISSION BACK.${N} That must never happen."
+  say "      Nothing was sent. Report this run with the output above."
+  stop_walk
 else
-  say "      ${B}Allowed, for ten minutes.${N}"
-  say ""
-  say "  ${Y}3b. Build the transaction, on a web page.${N}"
-  say ""
-  say "      A transaction is a short note to the network: ${B}from${N} this address, ${B}to${N} that address,"
-  say "      ${B}this much${N}, plus a fee. Unsigned, it is just a note; the network ignores it. The page builds"
-  say "      the note for you. It uses only public information and never asks for a key."
-  say ""
-  say "      Open this link:"
-  cmd "$SIGN_PAGE?plan=$SIG_VER&address=$ADDRESS&to=$ADDRESS"
-  note "It is the same file as sign.html in this folder; open that one instead if you prefer to read it first."
-  say ""
-  say "      On the page, in order:"
-  say "        1. ${B}Read balance${N}: your address is filled in; it shows the test ETH you have."
-  say "        2. ${B}Build unsigned transaction${N}: it sends 0.001 test ETH to your own address, so nothing is"
-  say "           lost but the fee. The black box shows the note, and on its last line a ${B}digest${N}."
-  say ""
-  say "      ${B}The digest${N} is a fingerprint of that note: from, to, amount, fee, network, boiled down to 64"
-  say "      characters. Change one detail and the digest changes. It is what the Enclave will sign."
-  say ""
-  DIGEST=""
-  while :; do
-    ask "Paste the digest (the 64 characters on the line marked digest; empty skips):"
-    DIGEST=$(printf '%s' "$REPLY" | tr -d ' \r\t'); case "$DIGEST" in 0x*|0X*) DIGEST=${DIGEST#??} ;; esac
-    printf '%s' "$DIGEST" | grep -qE '^[0-9a-fA-F]{64}$' && break
-    [ -z "$DIGEST" ] && { say "      Skipping the signing part."; break; }
-    if printf '%s' "$DIGEST" | grep -qE '^[0-9a-fA-F]{40}$'; then
-      say "      ${R}That is an address (40 characters).${N} The digest appears on the page only after you click"
-      say "      ${B}Build unsigned transaction${N}: the last line of the black box, starting with ${B}digest${N}, 64 characters."
-    else
-      say "      ${R}Not a digest.${N} 64 hex characters, from the line marked digest on the page. Empty skips."
-    fi
-  done
-  if [ -n "$DIGEST" ]; then
-    SIGN_CMD="ekka plan run $SIG_VER --input digest=$DIGEST --input alg=secp256k1"
-    say ""
-    say "  ${Y}3c. The Enclave signs it.${N}"
-    say ""
-    say "      Signing means: inside the Enclave, the digest and your private key produce a ${B}signature${N}"
-    say "      that can be verified against the wallet's public key. The plan submits the digest; EKKA checks"
-    say "      whether this agent has authority to perform the signing action; the Enclave signs and hands"
-    say "      back the signature. Nobody, including this script, sees the key."
-    say ""
-    say "      Same plan as step 2. This time a grant exists, for ten minutes."
-    cmd "$SIGN_CMD"
-    wait_enter "Enter runs it."
-    show_run "$SIGN_CMD"
-    OUT_PATH=$(grep -oE 'output is at .*' "$OUTF" | sed 's/output is at //' | head -1 || true)
-    if grep -q "✓ Plan completed" "$OUTF" && [ -n "$OUT_PATH" ]; then
-      SIG=$(field_of "$OUT_PATH" signature); RID=$(field_of "$OUT_PATH" recovery_id)
-      say "      ${B}Signed inside the Enclave.${N} Two values came back:"
-      say ""
-      say "        signature    ${C}${SIG:-see $OUT_PATH}${N}"
-      say "        recovery_id  ${C}${RID:-see $OUT_PATH}${N}"
-      say ""
-      say "      The ${B}signature${N} is the proof. The ${B}recovery_id${N} is one extra digit the network uses to work out"
-      say "      which address signed. Neither one reveals the key."
-      say ""
-      say "  ${Y}3d. Send it.${N}"
-      say ""
-      say "      Back on the page: paste the two values into their boxes, then ${B}Assemble and broadcast${N}."
-      say "      The page first checks that the signature really belongs to your address. Then it hands the"
-      say "      signed note to the network. In about 15 seconds it shows ${B}confirmed${N} and a link you can open."
-      say ""
-      wait_enter "Press Enter when the page says confirmed (or to move on)."
-      say ""
-      say "      ${B}What just happened:${N} you allowed one verb on one key for ten minutes; the plan asked; the"
-      say "      Enclave signed 64 characters and returned a signature; the page sent it. The key never left"
-      say "      the Enclave. EKKA's server saw only: a sign step ran on keys/$KEY, and a fingerprint."
-    else
-      explain_failure
-    fi
-  fi
-  say ""
-  say "  ${Y}3e. Take the permission back, then check the records.${N}"
-  say ""
-  say "      The grant would expire on its own in ten minutes. Take it back now, so you see the switch:"
-  # ⛔ NEVER RUN A PLACEHOLDER. If the id did not parse, say so and stop: a
-  # command containing <angle brackets> is a shell redirect, not an instruction.
-  if [ -z "${SIG_GRANT_ID:-}" ]; then
-    say ""
-    say "      ${R}The grant id could not be read from the output above.${N}"
-    say "      Take it back by hand, then come back to ${C}./open.sh steps${N}:"
-    say ""
-    cmd "ekka gate grant list"
-    cmd "ekka gate grant revoke <the id it shows for keys/$KEY>"
-    say ""
-    stop "Stopped before the last step, because the revoke could not be run for you." \
-         "Revoke it with the two lines above, then: ./open.sh steps"
-  fi
-  REVOKE_CMD="ekka gate grant revoke $SIG_GRANT_ID"
-  cmd "$REVOKE_CMD"
-  wait_enter "Enter runs it."
-  show_run "$REVOKE_CMD"
-  # A revoke that did not take makes the next refusal meaningless, so check it
-  # here rather than blaming the sign step for a permission that never went away.
-  if [ "$RC" != 0 ]; then
-    say "      ${R}The revoke did not succeed.${N} The next step would prove nothing, so stop here."
-    stop_walk
-  fi
-  say "      Now the same sign request as before, one more time:"
-  RERUN="ekka plan run $SIG_VER --input digest=${DIGEST:-7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069} --input alg=secp256k1"
-  cmd "$RERUN"
-  wait_enter "Enter runs it."
-  show_run "$RERUN"
-  if grep -q RESOURCE_GRANT_DENIED "$OUTF"; then
-    say "      ${B}Refused again.${N} The permission was a switch, and you own it."
-  else
-    say "      ${R}Unexpected.${N} After the revoke this should have been refused with RESOURCE_GRANT_DENIED."
-    explain_failure
-    say ""
-    say "  ${R}✖ The walkthrough has stopped.${N} The last refusal was not the one this step demonstrates."
-    say ""
-    exit 1
-  fi
-  say ""
-  say "      Last thing. ${B}Turn wifi off now.${N} Every step you just took, allowed or refused, left a"
-  say "      signed record on this machine. This checks all of them and asks EKKA nothing:"
-  cmd "ekka receipts verify"
-  wait_enter "Wifi off? Enter runs it."
-  show_run "ekka receipts verify"
-  if grep -qi "chain empty" "$OUTF"; then
-    say "      ${B}Nothing to verify yet.${N} Records are written on this machine when a plan actually runs here."
-    say "      No plan has, so the chain is empty. Once step 1 has run, this command has something to check."
-  elif [ "$RC" = 0 ]; then
-    say "      ${B}What happened:${N} each record is signed and points at the one before it. The ones signed by"
-    say "      this machine's Enclave are the steps that ran here; the rest were signed by EKKA's server,"
-    say "      the refusals among them. Change one, delete one, add one: the check fails. Wifi back on."
-  fi
-  learn "$DOCS/receipts/#how-do-i-verify-it-myself"
-  say ""
-  say "      ${B}One more thing: nobody wrote code for any of this.${N} The agent is a name. Its two plans are"
-  say "      the two JSON files you read before step 1. Each permission was one row you added and one you"
-  say "      took away. Every rule you watched hold was declared, not programmed, and every attempt to"
-  say "      break it was refused by EKKA's server before it reached this machine. That is the product."
+  explain_failure; stop_walk
 fi
+vw event "4. Once more, no permission" "AI decision (pay), new payment" "sign the payment" "refused: permission taken back" "not sent"
 
-try_more
-yours
+# ---- the record
+say ""; say "  ${Y}▶ The record.${N} While you watched, EKKA wrote down every step on this computer: what the AI"
+say "      was asked, what it decided, each permission you gave and took back, each signature allowed"
+say "      or stopped. Each entry is locked to the one before it, so no one can change one unseen."
+runs "$EK receipts verify"
+wait_enter "Enter checks the record. (It works even with wifi off.)"
+busy "Checking the record" "$EK receipts verify --json"
+if [ "$RC" = 0 ] && grep -q '"ok": *true' "$OUTF"; then
+  VERIFY_RC=0
+  ok "The record checks out. Nothing in it was changed."
+  say "      Checked here, on your computer, without asking EKKA."
+  say "      Proof that needs us to check it is not proof."
+else
+  VERIFY_RC=1
+  say "      ${R}The record did not check out.${N} To see why:  ${C}$EK receipts verify${N}"
+fi
+vw render
+head_ "What just happened"
+case "$PAY_STATE" in ok) GONE="the network confirmed it" ;; error) GONE="the network took it and it failed" ;; *) GONE="the network took it" ;; esac
+say "  1. The AI decided to ${B}pay${N}. It had no permission, so ${B}EKKA stopped the signature.${N}"
+say "  2. You allowed it for $PERMIT. The same payment was signed, and $GONE."
+say "  3. You took the permission back."
+say "  4. The same payment once more: ${B}EKKA stopped it.${N}"
+say ""
+if [ "$VERIFY_RC" = 0 ]; then
+say "  ${B}Trust${N}      Every step was written down and signed on this computer, and the record checks out."
+else
+say "  ${B}Trust${N}      ${R}The record did not check out,${N} so this walk is not proven. See above."
+fi
+say "  ${B}Security${N}   The AI's payment was signed only while you allowed it."
+say "             Before and after, EKKA stopped it."
+say "  ${B}Privacy${N}    Your private key stayed in the Enclave on this computer, which signed with it."
+say "             ${B}EKKA NEVER SAW YOUR PRIVATE KEY.${N} To decide yes or no, EKKA's control plane was sent"
+say "             the message to the AI and the payment's fingerprint, then the signed payment, which"
+say "             is public on the network once it is sent."
+say "             The AI gate carried the message to the model, a third party, not EKKA."
+say "             It saw only the invoice, your rule, your list and your balance. Never your key."
+say "             ${B}Want your own model instead?${N} Add its API to your catalog the same way this kit added"
+say "             the Sepolia network. Then the message goes to your model, not a third party's."
+say ""
+say "  ${B}Good to know:${N} while a sign permission lasts, the agent may sign ANY payment with this key."
+say "  EKKA checks who may sign and for how long, not who is paid or how much. Your rule and this kit"
+say "  check those. Taking the permission back stops new signatures; a payment already sent is final."
+say ""
+say "  ${B}Next${N}"
+say "    See everything on one page     ${C}open .view/view.html${N}"
+say "    Change the AI's rule           edit ${C}bin/prompt${N}, then run ${C}./open.sh steps${N} again"
+say "    How it works                   ${C}./open.sh why${N}"
+say "    Every command it ran           ${C}./open.sh commands${N}"
+say "    The code                       ${C}$KIT_DOC${N}"
+say ""
+[ "$VERIFY_RC" = 0 ] || return 1
 }
 
-# ---------------------------------------------------------------- reprint on demand
-if [ "$MODE" = steps ] || [ "$MODE" = why ] || [ "$MODE" = commands ] || [ "$MODE" = try ]; then
-  [ -f "$STATE" ] || { say ""; say "  Run ./open.sh once first; there is nothing to show yet."; say ""; exit 1; }
+case "$MODE" in steps|setup) take_lock; trace "walk starts: $MODE" ;; esac
+if [ -f "$STATE" ]; then
   . "$STATE"
-  API_ROW=${API_ROW:-your-org/$ROW}; ORG=${ORG:-${API_ROW%%/*}}
-  case "$MODE" in why) why ;; commands) commands ;; try) try_more ;; steps) steps ;; esac
-  exit 0
+  case "$MODE" in
+    why) why ;;
+    commands) commands ;;
+    view) vw render; say "  $VIEWD/view.html" ;;
+    steps|setup)
+      if unresolved_attempt; then recover; exit 0; fi
+      if [ "$MODE" = steps ]; then DECISION=''; TX_HASH=''; TX_OUTCOME=''; steps; exit 0; fi
+      rm -f "$STATE" ;;
+    *) stop "Unknown mode: $MODE" "Use steps, why, commands or view." ;;
+  esac
+  [ -f "$STATE" ] && exit 0
 fi
+if [ "$MODE" != setup ]; then stop "No saved Kit setup exists." "Run ./open.sh first."; fi
 
-# ---------------------------------------------------------------- checks before anything is touched
+# ================================================================ setup
 command -v "$EKKA" >/dev/null 2>&1 || stop "EKKA is not installed." "Install it with the line in your email, then: ekka login --email you@example.com"
-# curl and python3 read the balance website, print the balance from a run, and pull the signature out of
-# a run's output. Without them the kit used to say the website was unreachable when the box simply had
-# no python3, which sent a person looking at the network instead of at the box.
-MISSING=""; for tool in curl python3; do command -v "$tool" >/dev/null 2>&1 || MISSING="$MISSING $tool"; done
-[ -z "$MISSING" ] || stop "This machine is missing:$MISSING." "The kit reads the balance website and a run's output with them. On Debian or Ubuntu: apt-get install -y curl python3"
-# This kit version needs a runner that has the secret gate's sign op (0.1.87).
-FLOOR=0.1.87; KIT_VERSION=$(cat "$HERE/VERSION" 2>/dev/null || echo dev)
+command -v python3 >/dev/null 2>&1 || stop "This machine is missing python3." "The kit builds the payment with it. On Debian or Ubuntu: apt-get install -y python3"
+# ⛔ 0.1.88: this kit catalogues its row in the person's OWN organization (`apis/<org>/eth-sepolia`),
+# which an Enclave before 0.1.88 refuses with API_NAME_INVALID. The sign op has been there since 0.1.87.
+FLOOR=0.1.88; KIT_VERSION=$(cat "$HERE/VERSION" 2>/dev/null || echo dev)
 HAVE=$(run --version 2>/dev/null | awk 'NR==1{print $2}')
 [ "$(printf '%s\n%s\n' "$FLOOR" "$HAVE" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" = "$FLOOR" ] || stop "This kit needs EKKA $FLOOR or later; you have ${HAVE:-an unknown version}." "Run the install line again, then open a new terminal window."
+"$HERE/bin/tx" selftest >/dev/null 2>&1 || stop "This kit's payment builder failed its own tests." "Nothing was changed. Report it with: bin/tx selftest"
 run secret list >/dev/null 2>&1 || stop "Your Enclave is not running." "In your other window: ekka enclave start <id>"
-HAVE_KEY=0; run secret list 2>/dev/null | grep -q "$KEY" && HAVE_KEY=1
-
-# which gates are ours
-if [ -n "$ENCLAVE" ]; then AINST="enclave${ENCLAVE}Api"; SINST="enclave${ENCLAVE}Secret"
-else
-  AINST=$(run gate list 2>/dev/null | grep -oE 'enclave[0-9a-f]{8}Api' | head -1 || true)
-  SINST=$(run gate list 2>/dev/null | grep -oE 'enclave[0-9a-f]{8}Secret' | head -1 || true)
-  [ -z "$AINST" ] && stop "Could not find your Enclave's gates." "Rerun with ENCLAVE=<the 8-character id from: ekka enclave list>"
-fi
-SGATE="secret/$SINST"
-
-# who you are, so every "check it yourself" line below names your real organization
-# 0.1.87 prints "Signed in as <email>, <org> (owner)."; older builds print an "organization <org>" line.
+GATES=$(run gate list 2>/dev/null || true)
+# ⛔ THIS MACHINE'S Enclave, never the first one listed (measured 2026-09-24 on the Financial Kit).
+[ -n "$ENCLAVE" ] || ENCLAVE=$(run whoami 2>/dev/null | sed -n 's/^ *enclave id  *\([0-9a-f]\{8\}\).*/\1/p' | head -1)
+[ -n "$ENCLAVE" ] || stop "This machine is not an Enclave of your organization." "Start one here first: ekka enclave create --name \"this machine\", then ekka enclave start <id>"
+AINST="enclave${ENCLAVE}Api"; SINST="enclave${ENCLAVE}Secret"
+printf '%s\n' "$GATES" | grep -q "api/$AINST" || stop "This machine's Enclave ($ENCLAVE) offers no api gate yet." "Is it running? In your other window: ekka enclave start <id>"
+printf '%s\n' "$GATES" | grep -q "secret/$SINST" || stop "This machine's Enclave ($ENCLAVE) offers no signing gate yet." "Is it running? In your other window: ekka enclave start <id>"
+LLM=${LLM:-$(printf '%s\n' "$GATES" | awk -v m="$MODEL" '/^  [a-z]+\//{n=""; u=0} /^  llm\//{n=$1; next} n && /url/{u=1} n && u && index($0, m){sub("llm/","",n); print n; exit}')}
+GATEWAY=${GATEWAY:-https://gateway.ekka.ai}
+NEED_LLM_REG=""; [ -n "$LLM" ] || NEED_LLM_REG=1
 ORG=$(run whoami 2>/dev/null | sed -n 's/.*Signed in as [^,]*, *\([^ ]*\) (.*/\1/p; s/^ *organization  *\([^ ]*\) (.*/\1/p' | head -1)
 [ -n "$ORG" ] || stop "Could not read your organization name." "Check: ekka whoami"
 API_ROW="$ORG/$ROW"
+HAVE_KEY=0; run secret list 2>/dev/null | grep -q "$KEY" && HAVE_KEY=1
 
-# ---------------------------------------------------------------- what this is
 [ -t 1 ] && clear 2>/dev/null || true
+head_ "Let an AI pay for you. You decide what it may do."
+say "  An invoice arrives. An AI checks it against your rule and decides whether to pay."
+say "  You give it permission to sign, for as long as you choose, and its payment goes through."
+say "  Take the permission back whenever you want, and it stops."
 say ""
-say "  ${B}EKKA · Your wallet agent${N}"
-say "  ${D}An AI agent can request a wallet signature without ever seeing the private key.${N}"
+say "  ${B}Trust${N}      Every action is recorded and signed, so you can prove what happened."
+say "  ${B}Security${N}   The AI can do only what you allowed, and only for as long as you allowed it."
+say "  ${B}Privacy${N}    Your wallet's private key stays in the Enclave on this computer, which signs with it."
+say "             ${B}EKKA NEVER SEES YOUR PRIVATE KEY.${N} Neither does the AI, a third-party model, not EKKA."
+say "             To decide yes or no, EKKA's control plane is sent the message to the AI and the"
+say "             payment's fingerprint, then the signed payment, which is public once it is sent."
+say "             The AI gate carries the message to the model, a third party, not EKKA."
 say ""
-say "  1. You allow one thing: read the balance. The agent reads it."
-say "  2. The agent asks to sign. Refused before it reaches this machine."
-say "  3. You allow signing for ten minutes, sign once, take it back. Refused again."
-say "  Every attempt, allowed or refused, lands in a signed record you check with wifi off."
-head_ "Your key"
-say "  Pasted once at a hidden prompt, encrypted inside the Enclave on this machine."
-say "  ${B}No command prints it back. Not the agent's, not EKKA's, not yours.${N}"
-say "  The agent submits a digest, 32 bytes that stand for one exact transaction. EKKA checks"
-say "  whether that agent has authority to perform the signing action. If it does, the Enclave"
-say "  signs inside itself and returns the signature."
-say "  What leaves this machine: that a step ran, and a fingerprint of the result."
-say "  ${B}Your private key never leaves the Enclave. Only the signature values come back.${N}"
+say "  ${B}Safe to try${N}"
+say "    · The Sepolia test network only. Test ETH is free and has no value. No real money."
+say "    · Your key stays on this computer, encrypted. Use a wallet you made for this."
+say "    · Nothing is signed unless you have given permission."
+say "    · The payment rule is an example, not advice."
 say ""
-say "  ${NETNAME} only. Test ETH from a faucet. Full walkthrough: ${C}$KIT_DOC${N}"
+say "  ${B}You need${N} a test wallet with a little test ETH. How to make one in MetaMask and fill it,"
+say "  two minutes: ${C}$WALLET_HELP${N}"
 say ""
-ask "Continue? [y/N]"
+say "  ${D}What gets set up, in detail:  ./open.sh why        kit $KIT_VERSION, EKKA $HAVE${N}"
+say ""
+ask "Ready? [y/N]"
 case "$REPLY" in y|Y|yes|YES) ;; *) say ""; say "  Nothing was changed."; say ""; exit 0 ;; esac
 
-head_ "Your wallet's private key goes into the vault"
+head_ "Setting up"
+
+# ---------------- ⛔ THE ONLY BLOCK THAT TOUCHES YOUR KEY ----------------
 if [ "$HAVE_KEY" = 1 ]; then
-  ok "The vault already holds a key named ${B}$KEY${N}. You put it there earlier; nothing to do."
-  say "      Only the name is visible, to you or anyone:  ${C}ekka secret list${N}"
+  ok "Your key is already stored on this computer, as ${B}$KEY${N}."
 else
-  say "  ${B}Where to get the private key:${N} open MetaMask, click the ${B}three dots${N} beside"
-  say "  the account name, choose ${B}Account details${N}, then ${B}Show private key${N}. It asks"
-  say "  for your MetaMask password and shows 64 characters. That is what goes below."
-  say ""
-  say "  ${Y}Use a throwaway account you made for this, funded from a faucet.${N} Never a"
-  say "  wallet that holds anything you would miss."
-  say ""
-  say "  ${B}What happens:${N} this script asks for the key at a prompt that shows nothing as you paste."
-  say "  It checks only the shape (64 hex characters), hands it to the Enclave, and forgets it."
-  say "  The Enclave encrypts it and stores it under the name ${B}$KEY${N}. From then on no command"
-  say "  prints it back. Never written to disk in the clear, to shell history, or to a command line."
-  say ""
+  say "  In MetaMask: the account's ${B}three dots${N}, ${B}Account details${N}, ${B}Show private key${N}."
+  say "  Paste it below. It stays hidden while you paste. ${Y}Use a wallet you made for this.${N}"
   TRIES=0
   while :; do
-    printf "  ${Y}Private key of your Sepolia test wallet (hidden as you paste):${N} "
+    printf "  ${Y}Private key of your test wallet (hidden):${N} "
     stty -echo 2>/dev/null || true; read -r K <&3 || K=""; stty echo 2>/dev/null || true; say ""
     K=$(printf '%s' "$K" | tr -d ' \r\t'); case "$K" in 0x*|0X*) K=${K#??} ;; esac
-    if printf '%s' "$K" | grep -qE '^[0-9a-fA-F]{64}$'; then break; fi
-    TRIES=$((TRIES+1))
+    printf '%s' "$K" | grep -qE '^[0-9a-fA-F]{64}$' && break
     if printf '%s' "$K" | grep -qE '^[0-9a-fA-F]{40}$'; then
-      say "  ${R}That is the wallet's address, the public half (40 characters).${N} The private key is 64"
-      say "  characters. In MetaMask: the account's three dots, Account details, Show private key."
+      say "  ${R}That is the wallet's address, the public half.${N} The private key is 64 characters."
     else
-      say "  ${R}Not a private key.${N} Expected 64 hex characters (0-9, a-f), with or without 0x in front."
+      say "  ${R}That does not look like a private key${N} (64 characters, 0-9 and a-f). Nothing was stored."
     fi
-    [ "$TRIES" -ge 3 ] && stop "Three tries. Nothing was stored." "Find the key in MetaMask (Account details, Show private key) and run ./open.sh again."
+    TRIES=$((TRIES+1)); [ "$TRIES" -ge 3 ] && { K=""; stop "Three tries. Nothing was stored." "Find the key in MetaMask (Account details, Show private key), then ./open.sh again."; }
   done
-  printf '%s' "$K" | run secret put "$KEY" --stdin >/dev/null || { K=""; stop "The Enclave did not store the key." "Is it running? In your other window: ekka enclave list"; }
+  printf '%s' "$K" | run secret put "$KEY" --stdin >/dev/null 2>&1 || { K=""; stop "The Enclave did not store the key." "Is it running? In your other window: ekka enclave start <id>"; }
   K=""
-  ok "Stored. Check what is visible, the name and nothing else:"
-  show_run "ekka secret list"
+  ok "Your key is stored on this computer, encrypted. The AI cannot see it, and neither can EKKA."
 fi
+# ---------------- end of the block that touches your key ----------------
 
-say ""
-say "  ${B}Now the public half.${N} A wallet has two parts, and they are not the same secret:"
-say ""
-say "      ${B}private key${N}   64 characters. Proves you own the wallet and can move its money."
-say "                    You just put it in the Enclave's vault on this machine. Nothing"
-say "                    reads it back, not the agent, not EKKA, not you."
-say "      ${B}address${N}       42 characters, starts with 0x. This is public on purpose: it is"
-say "                    what you give people so they can send you funds, and anyone can"
-say "                    look up its balance. Sharing it gives away nothing."
-say ""
-say "  The plan will name the ${B}address${N}, so the agent reads that balance and no other. The"
-say "  agent never sees the private key: when it needs a signature it hands the Enclave 32"
-say "  bytes to sign, and only if you have allowed that."
-ask "Your Sepolia wallet address (starts with 0x):"
-ADDRESS=$(printf '%s' "$REPLY" | tr -d ' \r\t')
-if printf '%s' "$ADDRESS" | grep -qE '^(0x)?[0-9a-fA-F]{64}$'; then
-  stop "That is a PRIVATE key, and it was just shown on this screen. Treat that wallet as burned." "Make a new account in MetaMask, then run ./open.sh again and paste its ADDRESS here (0x and 40 characters)."
-fi
-printf '%s' "$ADDRESS" | grep -qE '^0x[0-9a-fA-F]{40}$' || stop "That does not look like a wallet address (0x followed by 40 hex characters)." "Copy it from MetaMask: the copy icon next to the account name. Nothing was changed."
-SHORT="$(printf '%s' "$ADDRESS" | cut -c1-6)…$(printf '%s' "$ADDRESS" | rev | cut -c1-4 | rev)"
-
-# ---------------------------------------------------------------- is there test ETH in it?
-head_ "Is there test ETH in it?"
-say "  Step 3 moves a little of it, so the wallet needs some first. Asking the public website"
-say "  directly (no agent, no EKKA involved):"
+say "  Now your wallet's ${B}address${N}, the public half: 0x and 40 characters. It is public on purpose."
+TRIES=0
 while :; do
-  BAL=$(site_balance "$ADDRESS")
-  case "$BAL" in
-    "?") say "  ${Y}Could not reach the website just now.${N} Continuing; step 1 will show the balance."; break ;;
-    0|0.000000) say "  ${Y}$SHORT holds no test ETH yet.${N}"; faucet_help
-       ask "Press Enter to check again, or s to continue with an empty wallet:"
-       case "$REPLY" in s|S) break ;; esac ;;
-    *) ok "$SHORT holds ${B}$BAL ETH${N} on the $NETNAME."; break ;;
-  esac
+  ask "Your wallet address:"
+  ADDRESS=$(printf '%s' "$REPLY" | tr -d ' \r\t')
+  if printf '%s' "$ADDRESS" | grep -qE '^(0x)?[0-9a-fA-F]{64}$'; then
+    ADDRESS=""; stop "That is a PRIVATE key, and it was just shown on this screen. Treat that wallet as burned." "Make a new account in MetaMask, then run ./open.sh again and paste its ADDRESS here."
+  fi
+  printf '%s' "$ADDRESS" | grep -qE '^0x[0-9a-fA-F]{40}$' && break
+  say "  ${R}That does not look like an address${N} (0x and 40 characters). Copy it from MetaMask."
+  TRIES=$((TRIES+1)); [ "$TRIES" -ge 3 ] && stop "Three tries. Nothing was changed." "Copy the address from MetaMask, then ./open.sh again."
+done
+ADDRESS=$(printf '%s' "$ADDRESS" | tr 'A-F' 'a-f')
+say "  The invoice in this walk pays $AMOUNT_ETH test ETH. By default it pays ${B}you back${N}, so only the"
+say "  network fee is spent. Or type another address to pay."
+while :; do
+  ask "Who does the invoice pay? Enter pays you back:"
+  PAYEE=$(printf '%s' "${REPLY:-$ADDRESS}" | tr -d ' \r\t' | tr 'A-F' 'a-f')
+  printf '%s' "$PAYEE" | grep -qE '^0x[0-9a-f]{40}$' && break
+  say "  ${R}That does not look like an address${N} (0x and 40 characters)."
 done
 
-head_ "Setting up"
-say "  Three things change in your organization. Each one is a file or a row you can read afterwards."
+# ---- the hosted model gate, when the org has not registered it
+if [ -n "$NEED_LLM_REG" ]; then
+  item_start "Connected EKKA's AI to your organization"
+  quiet "$EK gate register $GATEWAY"
+  [ "$RC" = 0 ] || { spin_stop; show_failure; stop "EKKA's AI could not be connected to your organization." "Check: ekka gate list"; }
+  LLM=$(run gate list 2>/dev/null | awk -v m="$MODEL" '/^  [a-z]+\//{n=""; u=0} /^  llm\//{n=$1; next} n && /url/{u=1} n && u && index($0, m){sub("llm/","",n); print n; exit}')
+  [ -n "$LLM" ] || { spin_stop; stop "The gateway registered, but no gate serving $MODEL appeared." "Check: ekka gate list"; }
+  item_done
+fi
 
-# 1. the balance website: first the row in your catalog, then the connection on this machine
-if run api list 2>/dev/null | grep -qE "^\s*$API_ROW(\s|@)"; then
-  ok "Your organization already allows read access to the balance website (${B}$API_ROW${N})."
-else
+# ---- the catalog row, and its connection on this machine (public: no key of yours)
+item_start "Added the Sepolia test network to your catalog"
+LIST=$(run api list 2>/dev/null || true)
+if ! printf '%s\n' "$LIST" | grep -qE "^\s*$API_ROW(\s|@)"; then
   sed "s#\"ekka/$ROW\"#\"$API_ROW\"#" "$HERE/catalog/ekka-$ROW.json" > "$OUTF"
-  ADD_OUT=$(run api create "$OUTF" 2>&1) || stop "Could not add the balance website to your catalog." "$(printf '%s\n' "$ADD_OUT" | grep -vE '^\s*$' | head -3)"
-  ok "Your organization now allows ${B}read${N} access to one website, as ${B}$API_ROW${N}. Private to you."
-  say "      Exactly what was allowed:   ${C}ekka api describe $API_ROW${N}"
-  say "      The file it came from:      ${C}cat $HERE/catalog/ekka-$ROW.json${N}"
+  ADD_OUT=$(run api create "$OUTF" 2>&1) || { spin_stop; stop "Could not add $API_ROW to your catalog." "$(printf '%s\n' "$ADD_OUT" | grep -vE '^\s*$' | head -3)"; }
 fi
-if run api list 2>/dev/null | grep -E "^\s*$API_ROW(\s|@)" | grep -q "connected here"; then
-  ok "This machine can already reach that website ($NETNAME)."
-else
-  # The website is public and needs no key. EKKA still stores a placeholder, because
-  # a connection with no credential at all is not something it allows yet.
-  printf 'public' | run api connect "$API_ROW" --stdin >/dev/null 2>&1 || stop "Could not connect the balance website." "Run it by hand to see why: ekka api connect $API_ROW"
-  ok "This machine can now reach that website, read only ($NETNAME). No login, no key of yours."
+if ! run api list 2>/dev/null | grep -E "^\s*$API_ROW(\s|@)" | grep -q "connected here"; then
+  # The service is public and needs no key. EKKA still stores a placeholder, because a connection
+  # with no credential at all is not something it allows yet.
+  printf 'public' | run api connect "$API_ROW" --stdin >/dev/null 2>&1 || { spin_stop; stop "Could not connect $API_ROW." "Run it by hand to see why: ekka api connect $API_ROW"; }
 fi
+item_done
 
-# 2. the agent
+# ---- the agent, its plans as files, and its three standing grants
+item_start "Created your AI agent"
 AG_OUT=$(run agent create "$AGENT" --name "Wallet Agent" 2>&1) || true
-if printf '%s\n' "$AG_OUT" | grep -qiE "✓|already|exists"; then
-  ok "The agent ${B}$AGENT${N} exists. It holds no permission of any kind:  ${C}ekka gate grant list${N}"
+if printf '%s\n' "$AG_OUT" | grep -qiE "already|exists"; then
+  # ⛔ AN OLD SIGN GRANT WOULD SPOIL STEP 1, and nothing else about an existing agent does.
+  EXISTING=$(run gate grant list --agent "$AGENT" 2>&1) || { spin_stop; stop "Could not check this agent's existing grants." "Run ekka gate grant list --agent $AGENT and resolve the error first."; }
+  if printf '%s\n' "$EXISTING" | grep -F "keys/$KEY" | grep -q "vault.sign"; then
+    spin_stop; stop "The agent $AGENT can already sign with $KEY, so step 1's refusal would prove nothing." \
+         "Revoke it (ekka gate grant list --agent $AGENT, then revoke its id), or run with AGENT=<a-new-name> ./open.sh."
+  fi
+elif printf '%s\n' "$AG_OUT" | grep -q "✓"; then
+  :
 elif printf '%s\n' "$AG_OUT" | grep -qiE "waiting to be approved|org.agents: 0"; then
-  stop "Your organization is not let in yet, so it cannot have an agent." "Reply to the email you were sent and say your organization name ($ORG). It takes one command on our side. Then run ./open.sh again."
+  spin_stop; stop "Your organization is not let in yet, so it cannot have an agent." "Reply to the email you were sent and say your organization name ($ORG). Then run ./open.sh again."
 else
-  stop "Could not create the agent $AGENT." "$(printf '%s\n' "$AG_OUT" | grep -vE '^\s*$' | head -3)"
+  spin_stop; stop "Could not create the agent $AGENT." "$(printf '%s\n' "$AG_OUT" | grep -vE '^\s*$' | head -3)"
 fi
+item_done
 
-# 3. the two plans
-cat > "$HERE/wallet.balance.json" <<EOF
-{
-  "plan": { "agent": "$AGENT", "code": "wallet.balance", "name": "wallet.balance" },
-  "definition": {
-    "schema_version": "ekka.plan.v2",
-    "run_context": [],
-    "inputs": {},
-    "operations": [{
-      "id": "balance",
-      "display_name": "Read the balance of one wallet",
-      "execution": { "allowed": [], "preferred": { "mode": "async", "runtime": "node" } },
-      "steps": [{
-        "id": "call",
-        "action_ref": "ekka.gate.api.v1",
-        "target": "$AINST",
-        "op": "read",
-        "call": "balance",
-        "inputs": { "resource": "apis/$API_ROW", "address": "$ADDRESS" }
-      }]
-    }]
-  }
+ver_from() { printf '%s\n' "$1" | grep -oE "[a-z0-9-]+\.$2@[0-9.]+" | head -1; }
+# Saves one plan and sets V to its version. NOT called inside $( ... ): a failure there was
+# captured with its message and, under `set -e`, ended the kit with NOTHING on screen.
+create_plan() {  # file code -> sets V
+  OUT=$(run plan create "$1" 2>&1 || true)
+  if ! printf '%s\n' "$OUT" | grep -qE "✓|already"; then
+    spin_stop
+    printf '%s\n' "$OUT" > "$OUTF"; show_failure
+    if grep -qiE "unreachable|timed out|connect|dns|resolve|52[0-9]|50[234]|GOVERN_HTTP_ERROR" "$OUTF"; then
+      say "      ${R}EKKA is not answering right now,${N} so the plan '$2' could not be saved. Nothing else"
+      say "      was changed. Try again in a few minutes:  ${C}./open.sh${N}"
+    else
+      say "      ${R}EKKA refused the plan '$2'.${N} The red lines above say why."
+    fi
+    stop_walk
+  fi
+  V=$(ver_from "$OUT" "$2"); V=${V:-ekka.$2@1.0.0}
 }
-EOF
-rm -f "$HERE/wallet.sign.json"
-run plan template "$HERE/wallet.sign.json" --gate "$SGATE" --op sign --resource "keys/$KEY" >/dev/null 2>&1 \
-  || stop "This EKKA cannot sign yet." "You need version 0.1.87 or later. Check with: ekka --version"
-awk -v a="$AGENT" '{ if ($0 ~ /"code": "/ && !d) { print "    \"agent\": \"" a "\","; d=1 } print }' "$HERE/wallet.sign.json" > "$HERE/wallet.sign.json.tmp" && mv "$HERE/wallet.sign.json.tmp" "$HERE/wallet.sign.json"
-BAL_OUT=$(run plan create "$HERE/wallet.balance.json" 2>&1 || true)
-SIG_OUT=$(run plan create "$HERE/wallet.sign.json" 2>&1 || true)
-printf '%s\n' "$BAL_OUT" | grep -qE "✓|already" || stop "The balance plan was refused." "$(printf '%s\n' "$BAL_OUT" | grep -vE '^\s*$' | head -3)"
-printf '%s\n' "$SIG_OUT" | grep -qE "✓|already" || stop "The sign plan was refused." "$(printf '%s\n' "$SIG_OUT" | grep -vE '^\s*$' | head -3)"
-BAL_VER=$(printf '%s\n' "$BAL_OUT" | grep -oE 'ekka\.wallet\.balance@[0-9.]+' | head -1); BAL_VER=${BAL_VER:-ekka.wallet.balance@1.0.0}
-SIG_VER=$(printf '%s\n' "$SIG_OUT" | grep -oE 'ekka\.wallet\.sign@[0-9.]+' | head -1); SIG_VER=${SIG_VER:-ekka.wallet.sign@1.0.0}
-BAL_GRANT="ekka gate grant add --agent $AGENT --type api --instance $AINST --resource apis/$API_ROW --capability api.read --no-fingerprint"
-# Ten minutes, on purpose: a sign grant means "sign anything with this key" while it exists.
-SIG_GRANT="ekka gate grant add --agent $AGENT --type secret --instance $SINST --resource keys/$KEY --capability secret.vault.sign --ttl 600 --no-fingerprint"
-cat > "$STATE" <<EOF
-ADDRESS='$ADDRESS'
-SHORT='$SHORT'
-API_ROW='$API_ROW'
-ORG='$ORG'
-AGENT='$AGENT'
-AINST='$AINST'
-SINST='$SINST'
-BAL_GRANT='$BAL_GRANT'
-SIG_GRANT='$SIG_GRANT'
-BAL_VER='$BAL_VER'
-SIG_VER='$SIG_VER'
-EOF
-ok "Plan ${B}$BAL_VER${N} is written. It names one wallet, ${B}$SHORT${N}, and takes no other."
-ok "Plan ${B}$SIG_VER${N} is written. It can ask the Enclave to sign with ${B}$KEY${N}."
-say "    ${B}It cannot see the key. Nothing can. The key stays inside the Enclave.${N}"
+"$HERE/bin/write-plans" "$HERE" "$AGENT" "$AINST" "$LLM" "$API_ROW" "$MODEL" "$KEY" "$ADDRESS" >/dev/null
+item_start "Saved its plan: read your balance";                    create_plan "$HERE/wallet.balance.json" wallet.balance; BAL_VER=$V; item_done
+item_start "Saved its plan: read the payments you have sent";      create_plan "$HERE/wallet.sent.json" wallet.sent; SNT_VER=$V; item_done
+item_start "Saved its plan: read the network's fees";              create_plan "$HERE/wallet.fees.json" wallet.fees; FEE_VER=$V; item_done
+item_start "Saved its plan: decide whether to pay, then sign";     create_plan "$HERE/wallet.decide.json" wallet.decide; DEC_VER=$V; item_done
+item_start "Saved its plan: sign its decision again";              create_plan "$HERE/wallet.sign.json" wallet.sign; SIG_VER=$V; item_done
+item_start "Saved its plan: send a payment that is already signed"; create_plan "$HERE/wallet.send.json" wallet.send; SND_VER=$V; item_done
 
-head_ "What just happened"
-say "  Your organization has an agent, ${B}$AGENT${N}, with two plans. ${B}Neither may run yet.${N}"
-say "  Allowing a plan is a separate step, called a grant, and only you can do it. Every attempt from"
-say "  now on, allowed or refused, is written to a signed record you can check with wifi off."
-say ""
-say "  ${B}Before you press Enter, check what was written.${N} Open another window; nothing runs until"
-say "  you come back here:"
-cmd "cat $HERE/wallet.balance.json           the plan: one wallet, one website, read"
-cmd "cat $HERE/wallet.sign.json              the plan: sign with keys/$KEY, nothing else"
-cmd "ekka api describe $API_ROW    exactly what the agent may call"
-cmd "ekka gate grant list                          what it is allowed today: nothing"
-say ""
-say "  ${D}Questions people ask at this point, answered: ./open.sh why${N}"
-printf "  ${Y}Press Enter to allow the first permission and watch the agent use it.${N} "; read -r _ <&3 || true; printf "\r%40s\r" ""
+grant() {  # label type instance resource capability words
+  item_start "$1"; shift
+  quiet "$EK gate grant add --agent $AGENT --type $1 --instance $2 --resource $3 --capability $4${5:+ $5}"
+  [ "$RC" = 0 ] || grep -qiE "already|exists" "$OUTF" || { spin_stop; show_failure; say "      ${R}The grant was not created.${N} The red lines above name the reason."; stop_walk; }
+  item_done
+}
+grant "Allowed it to read the Sepolia network"              api "$AINST" "apis/$API_ROW" api.read --no-fingerprint
+grant "Allowed it to send a payment that is already signed" api "$AINST" "apis/$API_ROW" api.write --no-fingerprint
+grant "Allowed it to ask the AI"                            llm "$LLM" "$MODEL" llm.infer ""
+ok "Your AI agent is ready. It may NOT sign. Only you can allow that, in step 2."
+save_state
+
+read_plan "Checking your wallet" "$BAL_VER"
+funds_check "$P"
+ok "Your wallet holds ${B}$BAL_ETH test ETH${N}: enough for the walk."
 steps

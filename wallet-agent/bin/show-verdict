@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""Name the AI's decision for one decide run, from what EKKA recorded.
+
+    show-verdict <file holding `ekka run show <run>` output> [--word]
+
+The decision is the one EKKA ACTED ON: the bounded fact the Enclave let cross, printed by
+`ekka run show` as `grades  decide: decision=<pay|hold>` (measured on prod 2026-09-25). The
+Enclave lets it cross only if the AI's JSON reply names exactly one of the two declared words.
+
+No decision fact has two causes, never confused: the plan took its default branch
+(`plan_transitioned_to_fail`): the AI answered with something that is not a declared word,
+invalid_model_output. Anything else means the AI never answered (a missing grant, no credit, a
+platform error): no_verdict, and the AI is not blamed for it."""
+import json, re, sys
+
+args = [a for a in sys.argv[1:] if not a.startswith("--")]
+if not args:
+    print(__doc__); sys.exit(1)
+try:
+    text = open(args[0]).read()
+except Exception:
+    text = ""
+m = re.search(r"grades\s+decide:\s*decision=(pay|hold)\b", text)
+word = m.group(1) if m else ("invalid_model_output" if "plan_transitioned_to_fail" in text else "no_verdict")
+why = ""
+for block in re.findall(r"\{[^{}]*\"decision\"[^{}]*\}", text):
+    try:
+        j = json.loads(block)
+        if j.get("decision") == word:
+            why = str(j.get("explanation", "")).strip(); break
+    except Exception:
+        continue
+if "--word" in sys.argv:
+    print(word); sys.exit(0)
+print(f"decision      {word}   (the fact EKKA recorded and acted on)")
+print(f"explanation   {why or '(none)'}")
