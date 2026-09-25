@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Write the one message the AI is sent, from named inputs and nothing else.
+
+    prompt <inputs.json> <position> <open-order> <out.txt>
+
+The AI picks WHAT to buy: whichever of Apple (AAPL) and the S&P 500 fund (SPY) did better over the
+last five trading days. The rule is the kit's example; edit RULE below and it is your rule.
+Nothing else reaches the AI: no key, no account number, no other order."""
+import json, sys
+
+RULE = ("Buy whichever of Apple (AAPL) and the S&P 500 fund (SPY) had the higher 5-day total return.\n"
+        "If they are equal, pick SPY.")
+
+if len(sys.argv) != 5:
+    print("usage: prompt <inputs.json> <position> <open-order> <out.txt>"); sys.exit(1)
+i = json.load(open(sys.argv[1]))
+msg = f"""You pick one of two investments using the rule below, and explain your pick. Paper trading only.
+
+RULE:
+{RULE}
+
+INPUTS, as of the {i['as_of'][:10]} close ({i['window_trading_days']} trading days, from {i['aapl_from'][:10]}, closes adjusted for splits and dividends):
+- AAPL 5-day total return: {i['aapl_return_pct']:+.2f}%
+- SPY 5-day total return: {i['spy_return_pct']:+.2f}%
+- Current AAPL and SPY positions: {sys.argv[2]}
+- The kit's open order: {sys.argv[3]}
+
+Use only these inputs. Do not use any other price or news.
+
+Answer with JSON and nothing else, in exactly this shape:
+{{"pick": "AAPL" | "SPY", "explanation": "<two sentences at most, naming the numbers you used>"}}
+"""
+open(sys.argv[4], "w").write(msg)
+print(msg)

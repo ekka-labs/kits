@@ -1,0 +1,36 @@
+{
+  "name": "ekka/alpaca-data",
+  "title": "Alpaca market data: read daily price bars, nothing else",
+  "base_url": "https://data.alpaca.markets",
+  "auth": {
+    "kind": "basic"
+  },
+  "credential_format": "Your Alpaca PAPER key id and secret key joined with a colon, KEYID:SECRET, the same pair the paper server takes. open.sh joins them for you at a hidden prompt. This row reads prices only; it has no call that can place, change or cancel anything.",
+  "operations": [
+    {
+      "call": "dailyBars",
+      "title": "Read daily price bars for a list of symbols, adjusted for splits and dividends",
+      "verb": "read",
+      "method": "GET",
+      "path": "/v2/stocks/bars",
+      "query_template": {
+        "symbols": "@call.symbols",
+        "timeframe": "1Day",
+        "start": "@call.start",
+        "adjustment": "all",
+        "feed": "iex",
+        "limit": "1000"
+      },
+      "inputs": {
+        "symbols": {
+          "description": "Comma-separated symbols, for example AAPL,SPY.",
+          "required": true
+        },
+        "start": {
+          "description": "The first day to return, YYYY-MM-DD. The kit asks for about three weeks so five trading days are always inside it.",
+          "required": true
+        }
+      }
+    }
+  ]
+}

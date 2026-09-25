@@ -12,8 +12,9 @@ that is the point of publishing it.
 | Kit | The claim | Time |
 |---|---|---|
 | [`wallet-agent`](wallet-agent/) | An AI agent can request a signature from your test wallet without ever seeing the private key. It is allowed to read the balance. It is not allowed to sign, until you grant that authority for ten minutes, and you can take it back. | 20 min, Sepolia test network |
+| [`financial-api-agent`](financial-api-agent/) | Let an AI trade for you, and decide what it may do. A hosted model applies your Apple-vs-S&P 500 rule to real prices and picks one to buy. EKKA stops its order until you give it permission to trade, for as long as you choose. You take the permission back, and the next order is stopped. Paper account: the orders are simulated, the model call and the permission checks are real. | paper trading |
 
-One kit today. The next ones are chosen by what people build with these.
+Two kits today. The next ones are chosen by what people build with these.
 
 ## Run a kit
 

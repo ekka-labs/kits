@@ -1,0 +1,90 @@
+{
+  "name": "ekka/alpaca-paper",
+  "title": "Alpaca paper trading: read the account, place and cancel simulated orders",
+  "base_url": "https://paper-api.alpaca.markets",
+  "auth": {
+    "kind": "basic"
+  },
+  "credential_format": "Your Alpaca PAPER key id and secret key joined with a colon, KEYID:SECRET. open.sh joins them for you at a hidden prompt. This row can only reach the paper server; a live key is refused by the kit and would be useless here anyway.",
+  "operations": [
+    {
+      "call": "account",
+      "title": "Read the paper account: status, cash, buying power",
+      "verb": "read",
+      "method": "GET",
+      "path": "/v2/account",
+      "inputs": {}
+    },
+    {
+      "call": "positions",
+      "title": "List the open positions in the paper account",
+      "verb": "list",
+      "method": "GET",
+      "path": "/v2/positions",
+      "inputs": {}
+    },
+    {
+      "call": "submitOrder",
+      "title": "Place one simulated day limit order to buy",
+      "verb": "write",
+      "method": "POST",
+      "path": "/v2/orders",
+      "body_template": {
+        "symbol": "@call.symbol",
+        "qty": "@call.qty",
+        "side": "buy",
+        "type": "limit",
+        "time_in_force": "day",
+        "limit_price": "@call.limit_price",
+        "client_order_id": "@call.client_order_id"
+      },
+      "inputs": {
+        "symbol": {
+          "description": "The stock symbol, for example AAPL. The operator chooses it; nothing here picks a strategy.",
+          "required": true
+        },
+        "qty": {
+          "description": "How many shares, as a whole number in a string, for example \"1\".",
+          "required": true
+        },
+        "limit_price": {
+          "description": "The most to pay per share, as a decimal in a string, for example \"1.00\". Below the market price the order sits open until the day ends, which is what a demonstration wants.",
+          "required": true
+        },
+        "client_order_id": {
+          "description": "The kit's own name for this attempt, up to 128 characters. The same id is used again to look the order up, so a lost answer is resolved by asking, never by sending again.",
+          "required": true
+        }
+      }
+    },
+    {
+      "call": "orderByClientId",
+      "title": "Look up one order by the kit's own id for it",
+      "verb": "read",
+      "method": "GET",
+      "path": "/v2/orders:by_client_order_id",
+      "query_template": {
+        "client_order_id": "@call.client_order_id"
+      },
+      "inputs": {
+        "client_order_id": {
+          "description": "The client_order_id the order was placed with.",
+          "required": true
+        }
+      }
+    },
+    {
+      "call": "cancelOrder",
+      "title": "Cancel one open order the kit placed",
+      "verb": "delete",
+      "method": "DELETE",
+      "path": "/v2/orders/@call.order_id",
+      "inputs": {
+        "order_id": {
+          "description": "Alpaca's id for the order, from the lookup.",
+          "required": true
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Print one order from an order run on this machine.
+
+Reads the newest saved answer that describes an order, or the file given as the
+first argument. `--id` prints only Alpaca's order id, for the cancel step.
+
+Status and filled quantity are returned by the provider. A limit order can fill;
+a completed cancellation request is not itself proof of final cancellation."""
+import glob, json, os, sys
+
+def load(p):
+    try:
+        d = json.load(open(p))
+    except Exception:
+        return None
+    r = d.get("resource")
+    b = d.get("body")
+    if isinstance(r, str) and r.endswith("/alpaca-paper") and isinstance(b, dict) and "client_order_id" in b and "symbol" in b:
+        return d
+    return None
+
+def newest(want=None):
+    found = []
+    # Any step's answer, not only `call.json`: the AI plan's order step saves as `order.json`.
+    for p in glob.glob(os.path.expanduser("~/.ekka/artifacts/*/*.json")) + glob.glob(os.path.expanduser("~/.ekka/*/artifacts/*/*.json")):
+        if p.endswith(".meta.json"):
+            continue
+        d = load(p)
+        if d is not None and (want is None or d["body"].get("client_order_id") == want):
+            found.append((os.path.getmtime(p), d))
+    return max(found)[1] if found else None
+
+args = [a for a in sys.argv[1:] if not a.startswith("--")]
+want = None
+for a in sys.argv[1:]:
+    if a.startswith("--client="):
+        want = a.split("=", 1)[1]
+d = load(args[0]) if args else newest(want)
+if d is not None and want is not None and d["body"].get("client_order_id") != want:
+    d = None
+if d is None:
+    print("No order answer found." + (f" (client id {want})" if want else "")); sys.exit(1)
+b = d["body"]
+if "--status" in sys.argv:
+    print(b.get("status", "unknown")); sys.exit(0)
+if "--id" in sys.argv:
+    print(b.get("id", "")); sys.exit(0)
+print(f"order id        {b.get('id', '')}")
+print(f"kit's id        {b.get('client_order_id', '')}")
+print(f"order           {b.get('side', '')} {b.get('qty', '')} {b.get('symbol', '')} at most {b.get('limit_price', '')} each, {b.get('type', '')}, {b.get('time_in_force', '')}")
+print(f"status          {b.get('status', '')}   filled {b.get('filled_qty', '0')} of {b.get('qty', '')}")

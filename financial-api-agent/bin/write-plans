@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""Write the kit's plans as files you can read before they are created.
+
+    write-plans <dir> <agent> <api instance> <llm instance> <orders row> <data row> <model>
+
+  trade.market.json   read AAPL and SPY daily bars                     (market data, read)
+  trade.account.json  read the paper account                           (paper orders, read)
+  trade.positions.json list the paper positions                        (paper orders, read)
+  trade.status.json   look the kit's order up by its own id            (paper orders, read)
+  trade.decide.json   THE AI PLAN: the model applies the rule; ONLY a  (model use, then
+                      `buy` verdict leads to the order step               paper orders, write)
+  trade.operator.json the operator's test order, labelled as the       (paper orders, write)
+                      operator's in its code, never the AI's
+  trade.analyze.json  analysis only, for a schedule: a market read and a model
+                      recommendation, and NO order step anywhere in it
+
+The cancel plan is written later, when there is an order to name (open.sh)."""
+import json, os, sys
+
+if len(sys.argv) != 8:
+    print(__doc__); sys.exit(1)
+d, agent, ainst, llm, orders, data, model = sys.argv[1:]
+
+EXEC = {"allowed": [], "preferred": {"mode": "async", "runtime": "node"}}
+IDENT = {"requires_user_context": False}
+
+def contract(op):
+    # The api action's own fields, which govern checks every api step declares.
+    req = ["resource", "key"] + (["value"] if op == "write" else [])
+    return {"type": "object", "properties": {k: {"type": "object" if k == "value" else "string"} for k in req}, "required": req}
+
+def api(step_id, op, call, row, inputs):
+    # EVERY STEP SAYS WHAT A SUCCESS LOOKS LIKE. A step with no `expect` cannot fail:
+    # measured 2026-09-22, a cancel answered 422 and the run reported completed.
+    return {"id": step_id, "action_ref": "ekka.gate.api.v1", "target": ainst, "op": op, "call": call,
+            "inputs": dict({"resource": f"apis/{row}"}, **inputs, expect={"status": 200}), "action_input": {},
+            "step_input_contract": contract(op), "step_output_contract": {"type": "object"}, "identity": IDENT}
+
+def think(extra_inputs=None):
+    # The pick CROSSES to EKKA as a bounded fact only if it is exactly AAPL or SPY. Anything else
+    # is absent, the transitions below are all false, and the op falls to `default`, which is
+    # `fail`: invalid_model_output can never reach an order.
+    return {"id": "think", "action_ref": "ekka.gate.llm.v1", "feature": "llm.infer", "target": llm,
+            "op": "infer", "resource": model, "action_input": {},
+            "prompt": {"slug": "ekka-gate-probe-answer-v1", "source": "platform", "version": 1},
+            "inputs": dict({"user_message": "@input.user_message"}, **(extra_inputs or {})),
+            "step_input_contract": {"type": "object", "required": ["user_message"], "properties": dict(
+                {"user_message": {"type": "string"}}, **{k: {"type": "object"} for k in (extra_inputs or {})})},
+            "step_output_contract": {"type": "object", "required": ["text"], "properties": {
+                "text": {"type": "string"},
+                "pick": {"type": "string", "enum": ["AAPL", "SPY"]}}},
+            "identity": IDENT}
+
+def plan(code, name, inputs, ops):
+    return {"plan": {"agent": agent, "code": code, "name": name},
+            "definition": {"schema_version": "ekka.plan.v2", "run_context": [], "inputs": inputs, "operations": ops}}
+
+def op(op_id, title, steps, transitions=None, ai=False):
+    ex = json.loads(json.dumps(EXEC))
+    if ai:
+        ex["preferred"]["ai"] = {"model": model}
+    o = {"id": op_id, "display_name": title, "execution": ex, "steps": steps}
+    if transitions:
+        o["transitions"] = transitions
+    return o
+
+def order_step(step_id, symbol, limit_input):
+    return api(step_id, "write", "submitOrder", orders, {
+        "symbol": symbol, "qty": "@input.qty", "limit_price": limit_input,
+        "client_order_id": "@input.client_order_id"})
+
+plans = {
+    "trade.market": plan("trade.market", "Read AAPL and SPY daily bars", {"start": "The first day to return, YYYY-MM-DD."},
+        [op("market", "Read AAPL and SPY daily bars, adjusted", [api("bars", "read", "dailyBars", data, {"symbols": "AAPL,SPY", "start": "@input.start"})])]),
+    "trade.account": plan("trade.account", "Read the paper account", {},
+        [op("account", "Read the paper account", [api("call", "read", "account", orders, {})])]),
+    "trade.positions": plan("trade.positions", "List the paper positions", {},
+        [op("positions", "List the paper positions", [api("call", "read", "positions", orders, {})])]),
+    "trade.status": plan("trade.status", "Look one order up by the kit's own id", {"client_order_id": "The id the order was placed with."},
+        [op("orderByClientId", "Look one order up by the kit's own id", [api("call", "read", "orderByClientId", orders, {"client_order_id": "@input.client_order_id"})])]),
+    # THE AI PLAN. One AI call picks AAPL or SPY; the pick routes to the order for that symbol.
+    "trade.decide": plan("trade.decide", "The AI picks AAPL or SPY, and its pick is ordered",
+        {"user_message": "The one message the AI is sent: the rule and the named inputs.",
+         "qty": "How many shares, a whole number.",
+         "limit_aapl": "The most to pay per AAPL share.",
+         "limit_spy": "The most to pay per SPY share.",
+         "client_order_id": "The kit's own id for this attempt, written to disk before any write."},
+        [op("decide", "The AI picks AAPL or SPY from the named inputs", [think()], {
+                "output.pick == 'AAPL'": "orderAAPL",
+                "output.pick == 'SPY'": "orderSPY",
+                "default": "fail"}, ai=True),
+         op("orderAAPL", "The AI picked AAPL: one paper day limit order to buy it", [order_step("order", "AAPL", "@input.limit_aapl")], {"default": "end"}),
+         op("orderSPY", "The AI picked SPY: one paper day limit order to buy it", [order_step("order", "SPY", "@input.limit_spy")], {"default": "end"})]),
+    # The AI's pick from trade.decide, sent again as the same order. The AI is NOT asked again.
+    "trade.execute": plan("trade.execute", "Send the AI's recorded pick again as one paper day limit order",
+        {"symbol": "The AI's pick, as EKKA recorded it: AAPL or SPY.", "qty": "How many shares, a whole number.",
+         "limit_price": "The most to pay per share.", "client_order_id": "The kit's own id for this attempt."},
+        [op("execute", "One paper day limit order for the AI's recorded pick", [order_step("order", "@input.symbol", "@input.limit_price")])]),
+    "trade.analyze": plan("trade.analyze", "Analysis only: market read and the AI's pick, no order step",
+        {"user_message": "The instructions and rule; the AI reads the closes from the market step.", "start": "The first day to return, YYYY-MM-DD."},
+        [op("analyze", "Read the bars, ask the AI; there is no order step in this plan",
+            [api("bars", "read", "dailyBars", data, {"symbols": "AAPL,SPY", "start": "@input.start"}),
+             think({"bars": {"kind": "step_output", "step_id": "bars", "path": ["body", "bars"]}})],
+            {"default": "end"}, ai=True)]),
+}
+os.makedirs(d, exist_ok=True)
+for code, p in plans.items():
+    path = os.path.join(d, f"{code}.json")
+    json.dump(p, open(path, "w"), indent=2)
+    print(path)

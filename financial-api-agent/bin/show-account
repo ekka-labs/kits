@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Print the paper account from an account run on this machine.
+
+Each run's answer is saved under ~/.ekka/artifacts/<run>/call.json (`ekka plan run`
+prints the exact path on its "Its output is at" line). Pass that path to show that
+run. With no argument this opens the newest account answer.
+
+The account number is masked: it is not a secret, but it is not something to leave
+in a terminal scrollback either."""
+import glob, json, os, sys
+
+def load(p):
+    try:
+        d = json.load(open(p))
+    except Exception:
+        return None
+    r = d.get("resource")
+    if isinstance(r, str) and r.endswith("/alpaca-paper") and isinstance(d.get("body"), dict) and "buying_power" in d["body"]:
+        return d
+    return None
+
+def newest():
+    found = []
+    for p in glob.glob(os.path.expanduser("~/.ekka/artifacts/*/call.json")) + glob.glob(os.path.expanduser("~/.ekka/*/artifacts/*/call.json")):
+        d = load(p)
+        if d is not None:
+            found.append((os.path.getmtime(p), d))
+    return max(found)[1] if found else None
+
+d = load(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1] else newest()
+if d is None:
+    print("No account has been read yet. Run step 1 first."); sys.exit(1)
+b = d["body"]
+acct = str(b.get("account_number", ""))
+masked = ("…" + acct[-4:]) if len(acct) > 4 else acct
+def money(k):
+    v = b.get(k)
+    try:
+        return f"{float(v):,.2f} {b.get('currency', 'USD')}"
+    except (TypeError, ValueError):
+        return str(v)
+print(f"account         {masked}   (paper)")
+print(f"status          {b.get('status', '')}")
+print(f"cash            {money('cash')}")
+print(f"buying power    {money('buying_power')}")
+print(f"portfolio value {money('portfolio_value')}")

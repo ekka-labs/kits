@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""Print the AAPL position from a positions run's saved answer: the quantity, or "none".
+
+    show-positions <call.json> [--qty]
+
+--qty prints the quantity alone ("none" when there is no AAPL position), for the prompt."""
+import json, sys
+args = [a for a in sys.argv[1:] if not a.startswith("--")]
+try:
+    d = json.load(open(args[0]))
+    body = d["body"]
+    assert isinstance(body, list) and str(d.get("resource", "")).endswith("/alpaca-paper")
+except Exception:
+    print("unknown" if "--qty" in sys.argv else "No positions answer could be read."); sys.exit(1)
+# The two symbols the AI can pick between. Other positions are not shown and not given to the AI.
+held = [p for p in body if isinstance(p, dict) and p.get("symbol") in ("AAPL", "SPY")]
+qty = ", ".join(f"{p.get('qty', '?')} {p['symbol']}" for p in held) or "none"
+if "--qty" in sys.argv:
+    print(qty); sys.exit(0)
+print(f"AAPL and SPY    {qty}")
+others = len([p for p in body if isinstance(p, dict)]) - len(held)
+if others:
+    print(f"other positions {others} (not shown, and not given to the model)")

@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Turn one market-data run's saved answer into the named inputs the model is given.
+
+    market-inputs <bars.json> <out.json>
+
+<bars.json> is the answer the Enclave saved for the governed market read (`ekka plan run`
+prints its folder). The returns are computed HERE, on this machine, from the provider's
+adjusted daily closes, so the model is handed numbers and never asked to do the arithmetic.
+
+5-day total return = last close / close five trading days earlier - 1, on closes adjusted
+for splits and dividends. Exits 1, and writes nothing, if either symbol has fewer than six
+closes: a return over fewer days is a different number, not an approximation of this one."""
+import json, sys
+from datetime import datetime, timezone
+
+SYMBOLS = ("AAPL", "SPY")
+DAYS = 5
+
+def fail(msg):
+    print(msg); sys.exit(1)
+
+if len(sys.argv) != 3:
+    fail("usage: market-inputs <bars.json> <out.json>")
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception as e:
+    fail(f"Could not read the market answer {sys.argv[1]}: {e}")
+r = d.get("resource")
+body = d.get("body")
+if not (isinstance(r, str) and r.endswith("/alpaca-data") and isinstance(body, dict) and isinstance(body.get("bars"), dict)):
+    fail("That file is not a market-data answer from this kit's read.")
+
+out = {"computed_on": "this machine", "computed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+       "window_trading_days": DAYS, "feed": "iex", "adjustment": "all"}
+for s in SYMBOLS:
+    bars = sorted(body["bars"].get(s) or [], key=lambda b: b.get("t", ""))
+    closes = [(b.get("t"), b.get("c")) for b in bars if isinstance(b.get("c"), (int, float))]
+    if len(closes) < DAYS + 1:
+        fail(f"The provider returned {len(closes)} daily closes for {s}; a {DAYS}-day return needs {DAYS + 1}.")
+    (t0, c0), (t1, c1) = closes[-(DAYS + 1)], closes[-1]
+    k = s.lower()
+    out[f"{k}_from"] = t0
+    out[f"{k}_to"] = t1
+    out[f"{k}_close_from"] = c0
+    out[f"{k}_close_to"] = c1
+    out[f"{k}_return_pct"] = round((c1 / c0 - 1) * 100, 2)
+if out["aapl_to"] != out["spy_to"] or out["aapl_from"] != out["spy_from"]:
+    fail("AAPL and SPY do not end on the same trading days in this answer, so they cannot be compared.")
+out["as_of"] = out["aapl_to"]
+out["spread_pts"] = round(out["aapl_return_pct"] - out["spy_return_pct"], 2)
+json.dump(out, open(sys.argv[2], "w"), indent=1)
+print(f"window        {DAYS} trading days, {out['aapl_from'][:10]} close to {out['aapl_to'][:10]} close (IEX feed, adjusted)")
+print(f"AAPL          {out['aapl_close_from']} -> {out['aapl_close_to']}   {out['aapl_return_pct']:+.2f}%")
+print(f"SPY           {out['spy_close_from']} -> {out['spy_close_to']}   {out['spy_return_pct']:+.2f}%")
+print(f"AAPL minus SPY  {out['spread_pts']:+.2f} points   (computed on this machine, not by the model)")

@@ -1,0 +1,169 @@
+#!/bin/sh
+# A stand-in for the ekka CLI, for rehearsing a kit without a server. It answers the way
+# ekka answers on prod, with the same words, and keeps its little state in
+# $REHEARSAL_STATE. It is never installed for a person; CI uses it to run every kit end to end.
+#
+# ⛔ ONE STAND-IN PER KIT, AND THE DUPLICATION IS THE FEATURE. There used to be a single shared
+# stand-in with a branch per kit name, and that is how THIS kit's API vendor, agent name and plan
+# names travelled into a public release of a different kit. Verbs that rhyme across kits stay
+# duplicated: a stand-in that stands in for a different API is a different program.
+#
+# Every line the kit PARSES is copied from a real answer, measured on dev and prod on 2026-09-24:
+# `✓ Plan completed (run <uuid>)`, `Its output is at <path>`, `RESOURCE_GRANT_DENIED ... step
+# 'order'`, `grades       decide: verdict=buy`, and `plan_transitioned_to_fail` when the model's
+# answer is not a declared word. A stand-in that answered in its own words would rehearse a kit
+# against a CLI nobody ships.
+S=${REHEARSAL_STATE:?}
+printf '%s\n' "$*" >> "$S/calls.log"
+
+VERSION=0.1.89
+ENC=969c26dc
+ORG=example-org
+
+# A fresh run id per call, 36 characters like a real one, so the kit's `run show` finds the
+# verdict of THIS run and never another's.
+next_run() {
+  n=$(( $(cat "$S/runs" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$S/runs"
+  printf '00000000-0000-4000-8000-%012d' "$n"
+}
+# One step's answer, written where a real Enclave writes it (~/.ekka/artifacts/<run>/<step>.json).
+art() { # run  step  json
+  D="$HOME/.ekka/artifacts/$1"; mkdir -p "$D"; printf '%s\n' "$3" > "$D/$2.json"; printf '%s' "$D/$2.json"
+}
+completed() { # run  step  artifact
+  echo "✓ Plan completed (run $1)."; echo ""
+  echo "  Step '$2' produced no text. Its output is at $3"
+}
+denied_at_order() { # run
+  echo "✗ Plan failed (run $1)."
+  echo "  RESOURCE_GRANT_DENIED"
+  echo "  RESOURCE_GRANT_DENIED: agent 'trading-agent' in tenant '$ORG' step 'order' has no covering Grant for (ekka.gate.api.v1 instance=enclave${ENC}Api resource=apis/$ORG/alpaca-paper op=write)."
+  exit 2
+}
+denied() { # what
+  echo "ekka plan: the Enclave refused the request (-32001): govern dispatch failed: RESOURCE_GRANT_DENIED (no Grant covers $1)" >&2
+  exit 1
+}
+input_of() { # name  all-args...
+  want=$1; shift
+  for a in "$@"; do case "$a" in "$want="*) printf '%s' "${a#*=}"; return ;; esac; done
+}
+# The AI's pick for a run: AAPL unless the rehearsal says otherwise. `invalid` is a reply that is
+# not one of the declared words; the plan then takes its default, which fails.
+verdict() { printf '%s' "${REHEARSAL_PICK:-AAPL}"; }
+model_ran() { # run -> records what EKKA recorded for this run, for `run show`
+  v=$(verdict); printf '%s' "$v" > "$S/verdict-$1"
+}
+place_order() { # run  client-id  qty  limit  step  [symbol]
+  printf '%s' "$2" > "$S/order"
+  A=$(art "$1" "$5" "{\"resource\":\"apis/$ORG/alpaca-paper\",\"status\":200,\"body\":{\"id\":\"9f1d6f0e-2222-4ccc-9ddd-1e2f3a4b5c6d\",\"client_order_id\":\"$2\",\"symbol\":\"${6:-AAPL}\",\"side\":\"buy\",\"qty\":\"$3\",\"limit_price\":\"$4\",\"type\":\"limit\",\"time_in_force\":\"day\",\"status\":\"new\",\"filled_qty\":\"0\"}}")
+  completed "$1" "$5" "$A"
+}
+
+case "$1 $2" in
+  "--version ") echo "ekka $VERSION" ;;
+  "whoami ") printf '\n  Signed in as you@example.com, %s (owner).\n\n  This machine\n    enclave id   %s-0000-4000-8000-000000000001\n    organization %s\n' "$ORG" "$ENC" "$ORG" ;;
+  # ⚠️ THE KIT'S LIVENESS PROBE, not a vault verb: `open.sh` runs it only to see that the
+  # Enclave answers. This kit keeps its keys in the connection store, not the vault.
+  "secret list") : ;;
+  "gate list")
+     printf '\n  Gates this org can address\n\n  api/enclave%sApi\n      runs       inside this org'"'"'s Enclave (reported at start)\n      serves     *  (read, write)\n\n' "$ENC"
+     [ -n "${REHEARSAL_NO_GATEWAY:-}" ] && [ ! -f "$S/gateway" ] && exit 0
+     printf '  llm/prod\n      url        https://gateway.ekka.ai\n      for        reasoning\n      serves     anthropic/haiku-4  (infer)\n      serves     anthropic/sonnet-4  (infer)\n\n' ;;
+  "gate register") touch "$S/gateway"; echo "✓ Registered prod for your organization" ;;
+  "api list")
+     for r in alpaca-paper alpaca-data; do
+       [ -f "$S/row-$r" ] || continue
+       if [ -f "$S/conn-$r" ]; then printf '  %s/%s  1.0.0  yours  basic  connected here\n' "$ORG" "$r"
+       else printf '  %s/%s  1.0.0  yours  basic  not connected\n' "$ORG" "$r"; fi
+     done ;;
+  "api create")
+     r=$(grep -oE '"name": *"[^"]+"' "$3" | head -1 | sed 's/.*\/\([a-z-]*\)".*/\1/')
+     touch "$S/row-$r"; echo "✓ Added $ORG/$r@1.0.0" ;;
+  "api connect") cat >/dev/null 2>&1 || true; r=${3#*/}; touch "$S/conn-$r"; echo "✓ Connected" ;;
+  "agent create") echo "✓ Agent created: trading-agent" ;;
+  "plan create")
+     # EKKA stops answering in the middle of setup, as prod did on 2026-09-25 02:55Z.
+     case "$3" in *trade.positions*) if [ -n "${REHEARSAL_EKKA_GOES_AWAY:-}" ]; then
+       echo "ekka plan: could not reach the control plane: HTTP 521 (origin unreachable)" >&2; exit 1; fi ;; esac
+     code=$(grep -oE '"code": *"trade\.[A-Za-z]+"' "$3" | head -1 | sed 's/.*"\(trade\.[A-Za-z]*\)"/\1/')
+     echo "✓ Plan created: ekka.$code@1.0.0 · unlisted" ;;
+  "gate grant") case "$3" in
+      add) case "$*" in
+             *api.write*) touch "$S/writegrant"
+                echo "✓ Granted api.write on enclave${ENC}Api/apis/$ORG/alpaca-paper to agent trading-agent"
+                echo "  To take it back later:  ekka gate grant revoke 7c7c7c7c-8888-9999-aaaa-bbbbbbbbbbbb" ;;
+             *llm.infer*)
+                echo "✓ Granted llm.infer on prod/anthropic/sonnet-4 to agent trading-agent"
+                echo "  To take it back later:  ekka gate grant revoke 2b2b2b2b-0000-0000-0000-000000000000" ;;
+             *api.read*)  if [ -n "${REHEARSAL_GRANT_FAILS:-}" ]; then echo "ekka gate grant add: GOVERN_HTTP_ERROR (503)" >&2; exit 1; fi
+                echo "✓ Granted api.read to agent trading-agent"
+                echo "  To take it back later:  ekka gate grant revoke 1a2b3c4d-0000-0000-0000-000000000000" ;;
+           esac ;;
+      revoke) rm -f "$S/writegrant"; echo "✓ Revoked grant $4" ;;
+      list) echo "  (the kit's grants)" ;;
+    esac ;;
+  "run show")
+     v=$(cat "$S/verdict-$3" 2>/dev/null || true)
+     echo ""; echo "  Run $3"
+     case "$v" in
+       AAPL|SPY)
+         if [ -f "$S/failed-$3" ]; then echo "    status       failed"; else echo "    status       completed"; fi
+         echo "    grades       decide: pick=$v"
+         echo "  {\"pick\": \"$v\", \"explanation\": \"AAPL returned +4.20% against SPY's +0.80% over 5 days, so AAPL did better.\"}" ;;
+       invalid)
+         echo "    status       failed"; echo "    error        WORKFLOW_FAILED"
+         echo "    detail       plan_transitioned_to_fail: operation transitioned to reserved \"fail\" target" ;;
+       *) echo "    status       failed"; echo "    error        credit_exhausted" ;;
+     esac ;;
+  "plan run") case "$3" in
+      *trade.market*)
+         if [ -n "${REHEARSAL_STEP1_FAILS:-}" ]; then echo "ekka plan: the Enclave refused the request (-32001): govern dispatch failed: GOVERN_AUTH_REJECTED ()" >&2; exit 1; fi
+         R=$(next_run)
+         # Eight daily closes each; the last six give AAPL +4.20% and SPY +0.80% over five days.
+         B='{"AAPL":[{"t":"2026-09-14T04:00:00Z","c":200},{"t":"2026-09-15T04:00:00Z","c":201},{"t":"2026-09-16T04:00:00Z","c":200},{"t":"2026-09-17T04:00:00Z","c":202},{"t":"2026-09-18T04:00:00Z","c":204},{"t":"2026-09-21T04:00:00Z","c":206},{"t":"2026-09-22T04:00:00Z","c":207},{"t":"2026-09-23T04:00:00Z","c":208.4}],"SPY":[{"t":"2026-09-14T04:00:00Z","c":500},{"t":"2026-09-15T04:00:00Z","c":500},{"t":"2026-09-16T04:00:00Z","c":500},{"t":"2026-09-17T04:00:00Z","c":501},{"t":"2026-09-18T04:00:00Z","c":502},{"t":"2026-09-21T04:00:00Z","c":503},{"t":"2026-09-22T04:00:00Z","c":503},{"t":"2026-09-23T04:00:00Z","c":504}]}'
+         A=$(art "$R" bars "{\"resource\":\"apis/$ORG/alpaca-data\",\"status\":200,\"body\":{\"bars\":$B}}")
+         completed "$R" bars "$A" ;;
+      *trade.account*) R=$(next_run)
+         A=$(art "$R" call "{\"resource\":\"apis/$ORG/alpaca-paper\",\"body\":{\"account_number\":\"PA3TESTACCT9\",\"status\":\"ACTIVE\",\"currency\":\"USD\",\"cash\":\"100000.00\",\"buying_power\":\"200000.00\",\"portfolio_value\":\"100000.00\"}}")
+         completed "$R" call "$A" ;;
+      *trade.positions*) R=$(next_run)
+         A=$(art "$R" call "{\"resource\":\"apis/$ORG/alpaca-paper\",\"status\":200,\"body\":[]}")
+         completed "$R" call "$A" ;;
+      *trade.status*)
+         CID=$(input_of client_order_id "$@"); R=$(next_run)
+         if [ -f "$S/order" ] && [ "$CID" = "$(cat "$S/order")" ]; then
+           ST=new; [ -f "$S/canceled" ] && ST=canceled
+           A=$(art "$R" call "{\"resource\":\"apis/$ORG/alpaca-paper\",\"body\":{\"id\":\"9f1d6f0e-2222-4ccc-9ddd-1e2f3a4b5c6d\",\"client_order_id\":\"$CID\",\"symbol\":\"AAPL\",\"side\":\"buy\",\"qty\":\"1\",\"limit_price\":\"1.00\",\"type\":\"limit\",\"time_in_force\":\"day\",\"status\":\"$ST\",\"filled_qty\":\"0\"}}")
+           completed "$R" call "$A"
+         else
+           echo "ekka plan: the step failed: the server answered 404 (40410000): order not found" >&2
+           exit 1
+         fi ;;
+      *trade.decide*) R=$(next_run)
+         if [ -n "${REHEARSAL_NO_VERDICT:-}" ]; then
+           echo "✗ Plan failed (run $R)."; echo "  GOVERN_HTTP_ERROR (402) credit_exhausted"; exit 2
+         fi
+         model_ran "$R"
+         P=$(verdict)
+         case "$P" in
+           AAPL|SPY)
+             if [ -f "$S/writegrant" ]; then
+               L=$(input_of limit_aapl "$@"); [ "$P" = SPY ] && L=$(input_of limit_spy "$@")
+               place_order "$R" "$(input_of client_order_id "$@")" "$(input_of qty "$@")" "$L" order "$P"
+             else touch "$S/failed-$R"; denied_at_order "$R"; fi ;;
+           *) touch "$S/failed-$R"; echo "✗ Plan failed (run $R)."; echo "  WORKFLOW_FAILED"; exit 2 ;;
+         esac ;;
+      *trade.execute*) R=$(next_run)
+         [ -f "$S/writegrant" ] || denied "apis/$ORG/alpaca-paper (write)"
+         place_order "$R" "$(input_of client_order_id "$@")" "$(input_of qty "$@")" "$(input_of limit_price "$@")" order "$(input_of symbol "$@")" ;;
+      *trade.cancel*) if [ -n "${REHEARSAL_PERMIT_ENDS_BEFORE_CANCEL:-}" ]; then rm -f "$S/writegrant"; denied "apis/$ORG/alpaca-paper (write)"; fi
+         touch "$S/canceled"; R=$(next_run)
+         A=$(art "$R" call "{\"resource\":\"apis/$ORG/alpaca-paper\",\"status\":204,\"body\":null}")
+         completed "$R" call "$A" ;;
+      *trade.analyze*) R=$(next_run); model_ran "$R"; echo "✓ Plan completed (run $R)." ;;
+      *) echo "fake ekka: unexpected plan $3" >&2; exit 1 ;;
+    esac ;;
+  "receipts verify") case "$*" in *--json*) if [ -n "${REHEARSAL_RECORD_BROKEN:-}" ]; then echo '{"chain_intact":false,"ok":false,"verdict":"broken"}'; exit 1; fi; echo '{"chain_intact":true,"ok":true,"records":14,"verdict":"intact"}' ;; *) echo "✓ All 14 records check out." ;; esac ;;
+  *) echo "fake ekka: $*" >&2; exit 1 ;;
+esac

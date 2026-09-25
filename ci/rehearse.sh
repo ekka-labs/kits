@@ -62,6 +62,22 @@ done < "$R/modes"
 # ⚠️ A FRESH COPY OF THE KIT EACH TIME. The walkthrough above leaves `.demo-state` behind, and a
 # kit that finds one inspects the saved attempt instead of starting: the injected failure would
 # never be reached and every assertion below would be about the wrong screen.
+# A WALK UNDER A REAL TERMINAL. Code that runs only on a terminal (live progress, waiting lines)
+# is invisible to every run above, which pipes the output. A pseudo-terminal walk must reach the
+# end, exit 0, and show the kit's own "waiting" lines, pressing the keys a person would.
+if command -v python3 >/dev/null 2>&1 && [ -f "$R/tty-expect" ]; then
+  rm -rf "$WORK/ttykit" "$WORK/ttystate" "$WORK/ttyhome"; cp -R "$HERE/../$KIT" "$WORK/ttykit"; rm -f "$WORK/ttykit/.demo-state"
+  mkdir -p "$WORK/ttystate" "$WORK/ttyhome"
+  if ( cd "$WORK/ttykit" && REHEARSAL_STATE="$WORK/ttystate" HOME="$WORK/ttyhome" ROLL=0 PATH="$WORK/bin:$PATH" \
+        python3 "$HERE/tty-walk.py" "$R/answers" ) > "$WORK/tty.txt" 2>&1
+  then echo "  ok   a real-terminal walk exits 0"
+  else echo "  FAIL a real-terminal walk did not finish: $(tail -2 "$WORK/tty.txt" | tr '\n' ' ')"; rc=1; fi
+  while IFS= read -r must; do
+    case "$must" in ''|\#*) continue ;; esac
+    if grep -q "$must" "$WORK/tty.txt"; then echo "  ok   on a terminal, saw: $must"; else echo "  MISSING on a terminal: $must"; rc=1; fi
+  done < "$R/tty-expect"
+fi
+
 [ -f "$R/injections" ] || exit $rc
 INJ_IN="$R/answers.injected"; [ -f "$INJ_IN" ] || INJ_IN="$R/answers"
 while IFS='	' read -r name var must notrun notsee; do

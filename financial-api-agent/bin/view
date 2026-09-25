@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""The kit's evidence file, and the read-only page rendered from it.
+
+    view <state dir> set <key> <value>          one fact, stamped with the time it was true
+    view <state dir> authority <name> <state>   market_read | orders_read | orders_write
+    view <state dir> event <moment> <path> <asked> <ekka> <broker>
+    view <state dir> render                     writes <state dir>/view.html
+
+The page has no buttons and runs nothing. It shows what the file says, and the time each
+line was true. Granting, revoking, running and cleanup stay in the command line, with the
+operator's own session; the page prints those commands to copy. It says "as of", never
+"live": nothing here asks EKKA for the current authority."""
+import html, json, os, sys
+from datetime import datetime, timezone
+
+def now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+
+if len(sys.argv) < 3:
+    print(__doc__); sys.exit(1)
+d, cmd, rest = sys.argv[1], sys.argv[2], sys.argv[3:]
+os.makedirs(d, exist_ok=True)
+f = os.path.join(d, "evidence.json")
+try:
+    ev = json.load(open(f))
+except Exception:
+    ev = {"facts": {}, "authority": {}, "history": []}
+
+if cmd == "set" and len(rest) == 2:
+    ev["facts"][rest[0]] = {"value": rest[1], "as_of": now()}
+elif cmd == "authority" and len(rest) == 2:
+    ev["authority"][rest[0]] = {"state": rest[1], "as_of": now()}
+elif cmd == "event" and len(rest) == 5:
+    ev["history"].append(dict(zip(("moment", "path", "asked", "ekka", "broker"), rest), at=now()))
+elif cmd != "render":
+    print(__doc__); sys.exit(1)
+json.dump(ev, open(f, "w"), indent=1)
+if cmd != "render":
+    sys.exit(0)
+
+e = html.escape
+def fact(k, dflt="not yet"):
+    v = ev["facts"].get(k)
+    return (e(v["value"]), e(v["as_of"])) if v else (e(dflt), "")
+def row(label, k):
+    v, t = fact(k)
+    return f"<tr><th>{e(label)}</th><td>{v}</td><td class=t>{t}</td></tr>"
+
+AUTH = (("market_read", "Market data, read", "for the whole demonstration"),
+        ("orders_read", "Paper orders, read", "account, positions, the kit's own order by its id"),
+        ("orders_write", "Paper orders, write", "for as long as you chose, then revoked or ended by itself: submit and cancel on this paper API, no limit on symbol, side, size or price"))
+auth_rows = ""
+for k, label, scope in AUTH:
+    a = ev["authority"].get(k)
+    st, t = (e(a["state"]), e(a["as_of"])) if a else ("not granted", "")
+    cls = "on" if a and a["state"].startswith("granted") else "off"
+    auth_rows += f"<tr><th>{e(label)}</th><td class={cls}>{st}</td><td>{e(scope)}</td><td class=t>{t}</td></tr>"
+hist = "".join(
+    f"<tr><td class=t>{e(h['at'])}</td><td>{e(h['moment'])}</td><td>{e(h['path'])}</td><td>{e(h['asked'])}</td><td>{e(h['ekka'])}</td><td>{e(h['broker'])}</td></tr>"
+    for h in ev["history"]) or "<tr><td colspan=6>nothing has run yet</td></tr>"
+verdict, vt = fact("verdict")
+page = f"""<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>Financial Kit evidence</title>
+<style>
+:root{{--bg:#fbfaf7;--fg:#1d1d1b;--mut:#6b6a66;--line:#e2e0da;--on:#1f7a4a;--off:#9a3b2e;--card:#fff}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#161615;--fg:#ecebe6;--mut:#9c9b95;--line:#2d2c2a;--on:#6fcf97;--off:#e58a7a;--card:#1e1e1c}}}}
+body{{background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif;margin:0;padding:24px 16px}}
+main{{max-width:980px;margin:auto}} h1{{font-size:22px;margin:0 0 4px}} h2{{font-size:15px;margin:28px 0 8px;text-transform:uppercase;letter-spacing:.04em;color:var(--mut)}}
+.sub{{color:var(--mut)}} .card{{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto}}
+table{{border-collapse:collapse;width:100%}} th,td{{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}} th{{font-weight:600;white-space:nowrap}}
+.t{{color:var(--mut);font-size:13px;white-space:nowrap}} .on{{color:var(--on);font-weight:600}} .off{{color:var(--off);font-weight:600}}
+.verdict{{font-size:28px;font-weight:700}} code{{background:var(--line);padding:2px 6px;border-radius:4px;font-size:13px}} pre{{white-space:pre-wrap}}
+</style>
+<main>
+<h1>Financial Kit: evidence</h1>
+<div class=sub>Rendered {e(now())} from evidence.json. Read only: this page runs nothing. Every line carries the time it was true; nothing here is live.</div>
+
+<h2>The mandate and the rule</h2>
+<div class=card><p>"Compare Apple with SPY. Buy when my relative-strength conditions are met, sell when they reverse, and otherwise hold. Explain your decision."</p>
+<p><b>Rule:</b> buy when Apple's 5-day total return exceeds SPY's by more than 1.0 percentage point; sell when it trails by more than 1.0 point; otherwise hold.</p>
+<p><b>This demonstration acts on a buy only.</b> The connected order call places a buy limit order and nothing else. A sell verdict is shown and not acted on.</p></div>
+
+<h2>Where it ran</h2>
+<div class=card><table>{row("Model", "model_where")}{row("Execution", "exec_where")}</table></div>
+
+<h2>Inputs the model was given</h2>
+<div class=card><table>{row("Window", "window")}{row("AAPL 5-day return", "aapl_return")}{row("SPY 5-day return", "spy_return")}{row("AAPL minus SPY", "spread")}{row("AAPL position", "position")}{row("Kit's open order", "open_order")}</table>
+<p class=t>Returns computed on the operator's machine from the provider's adjusted daily closes, not by the model.</p></div>
+
+<h2>The verdict</h2>
+<div class=card><div class=verdict>{verdict}</div><div class=t>{vt}</div><p>{fact("explanation", "")[0]}</p>
+<p class=t>A verdict is not stable across runs. Each moment below says which path it took; none says "the same decision ran".</p></div>
+
+<h2>Authority, as of the time shown</h2>
+<div class=card><table><tr><th>Authority</th><th>State</th><th>Covers</th><th>As of</th></tr>{auth_rows}</table></div>
+
+<h2>The kit's own order, and positions</h2>
+<div class=card><table>{row("Client order id", "client_id")}{row("Broker status", "order_status")}{row("AAPL position", "position_after")}</table>
+<p class=t>Only the kit's own order, by its id. There is no call that lists all open orders.</p></div>
+
+<h2>History</h2>
+<div class=card><table><tr><th>Time</th><th>Moment</th><th>Path</th><th>What was asked</th><th>What EKKA decided</th><th>What the broker answered</th></tr>{hist}</table></div>
+
+<h2>Evidence</h2>
+<div class=card><p><b>Signed evidence:</b> each governed step produces signed evidence binding the authorized scope to hashes of its input and output. Check it: <code>ekka receipts verify</code></p>
+<p><b>Local artifacts, not the signed record:</b> the full model reply and the broker answers stay on this machine under <code>~/.ekka/…/artifacts/&lt;run&gt;/</code>.</p>
+<p class=t>Offline verification checks the local chain and signatures but cannot prove that the chain has not been truncated at the end; online verification can also check signing-key revocation.</p></div>
+
+<h2>Commands, to copy into your own terminal</h2>
+<div class=card><pre>ekka gate grant list --agent trading-agent
+ekka gate grant revoke &lt;grant id&gt;
+ekka receipts verify
+./open.sh steps</pre><p class=t>There are no buttons here on purpose. A page that can grant or revoke is an administration surface; your session stays in your terminal.</p></div>
+</main>
+"""
+open(os.path.join(d, "view.html"), "w").write(page)
+print(os.path.join(d, "view.html"))
