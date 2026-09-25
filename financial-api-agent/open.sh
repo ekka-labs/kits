@@ -181,7 +181,8 @@ explain_grant() {  # type instance resource capability what-it-means [ttl]
     *alpaca-data)  what="Alpaca prices" ;;
     *)             what="EKKA's AI" ;;
   esac
-  say "      You are telling EKKA: ${B}your AI agent may $5${N}, on ${B}$what${N}, from this computer only${6:+, ${B}for $6${N}}. Nothing else."
+  say "      You are telling EKKA: ${B}your AI agent may $5${N}, on ${B}$what${N},"
+  say "      from this computer only${6:+, ${B}for $6${N}}. Nothing else."
 }
 
 # Refused by EKKA before the network, or something else? The words are govern's own.
@@ -442,7 +443,8 @@ settle_submission() {
     ORDER_ID=$("$HERE/bin/show-order" --client="$CLIENT_ID" --id 2>/dev/null || true)
     ST=$("$HERE/bin/show-order" --client="$CLIENT_ID" --status 2>/dev/null || echo unknown)
     case "$ST" in new|accepted|pending_new) ST="waiting to be filled" ;; filled) ST="filled" ;; esac
-    ok "Alpaca accepted the order: buy $QTY share of $PICK_NAME at up to \$$LIMIT. Status: $ST."
+    ok "Alpaca accepted the order: buy $QTY share of $PICK_NAME at up to \$$LIMIT."
+    say "      Status at Alpaca: $ST."
     say "      ${B}See it yourself:${N} open ${C}$ALPACA_KEYS${N}, switch to your paper account, and open ${B}Orders${N}."
     say "      It is there as: buy $QTY $VERDICT, limit \$$LIMIT. Its client order id is $CLIENT_ID."
   elif refused_by_ekka; then
@@ -566,7 +568,8 @@ WRITE_GRANT_ID=$(grep -oE 'revoke +[0-9a-f-]{16,}' "$OUTF" | head -1 | awk '{pri
 save_state
 vw authority orders_write "granted for $PERMIT"
 ok "Permission given, for $PERMIT."
-say "      Now the AI's pick from step 1 goes to EKKA again, as the same order: buy $QTY share of $PICK_NAME."
+say "      Now the AI's pick from step 1 goes to EKKA again, as the same order:"
+say "      buy $QTY share of $PICK_NAME."
 say "      The AI is not asked again. Its decision stands; only your permission changed."
 EXE_CMD="$EK plan run $EXE_VER --input symbol=$VERDICT --input qty=$QTY --input limit_price=$LIMIT --input client_order_id=$CLIENT_ID"
 runs "$EXE_CMD"
@@ -671,7 +674,8 @@ busy "Checking the record" "$EK receipts verify --json"
 if [ "$RC" = 0 ] && grep -q '"ok": *true' "$OUTF"; then
   VERIFY_RC=0
   ok "The record checks out. Nothing in it was changed."
-  say "      Checked here, on your computer, without asking EKKA. Proof that needs us to check it is not proof."
+  say "      Checked here, on your computer, without asking EKKA."
+  say "      Proof that needs us to check it is not proof."
 else
   VERIFY_RC=1
   say "      ${R}The record did not check out.${N} To see why:  ${C}$EK receipts verify${N}"
@@ -689,7 +693,8 @@ say "  ${B}Trust${N}      Every step was written down and signed on this compute
 else
 say "  ${B}Trust${N}      ${R}The record did not check out,${N} so this walk is not proven. See above."
 fi
-say "  ${B}Security${N}   The AI's order went through only while you allowed it. Before and after, EKKA stopped it."
+say "  ${B}Security${N}   The AI's order went through only while you allowed it."
+say "             Before and after, EKKA stopped it."
 say "  ${B}Privacy${N}    Your Alpaca keys stayed on this computer and went only to Alpaca."
 say "             ${B}EKKA NEVER SAW YOUR KEYS OR YOUR ACCOUNT.${N} EKKA only allowed or refused."
 say "             The AI is a third-party model, not EKKA. It saw only the rule, the prices, and whether"
@@ -941,6 +946,7 @@ BARS_FILE=$(out_path); LIMIT_AAPL=$(lim "$BARS_FILE" AAPL); LIMIT_SPY=$(lim "$BA
 for v in "$LIMIT_AAPL" "$LIMIT_SPY"; do
   printf '%s' "$v" | grep -qE '^[0-9]+\.[0-9]{2}$' || stop "The market read did not give a price to set the limit from." "Check the output above, then run ./open.sh again."
 done
-ok "Prices are coming in. Whatever the AI picks, it will offer $QTY share, about 10% under today's price."
+ok "Prices are coming in. Whatever the AI picks, it will offer $QTY share,"
+say "    about 10% under today's price."
 save_state
 steps
