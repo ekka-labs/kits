@@ -204,6 +204,8 @@ QTY='$QTY'
 LIMIT='${LIMIT:-}'
 LIMIT_AAPL='$LIMIT_AAPL'
 LIMIT_SPY='$LIMIT_SPY'
+CLOSE_AAPL='${CLOSE_AAPL:-}'
+CLOSE_SPY='${CLOSE_SPY:-}'
 CLIENT_ID='$CLIENT_ID'
 MKT_VER='$MKT_VER'
 ACC_VER='$ACC_VER'
@@ -258,9 +260,9 @@ read_verdict() {
 # The price and the plain name for the AI's pick: its limit is about 10% under the last close.
 pick_limit() {
   case "$VERDICT" in
-    AAPL) LIMIT=$LIMIT_AAPL; PICK_NAME="Apple (AAPL)" ;;
-    SPY)  LIMIT=$LIMIT_SPY;  PICK_NAME="the S&P 500 fund (SPY)" ;;
-    *)    LIMIT=""; PICK_NAME="" ;;
+    AAPL) LIMIT=$LIMIT_AAPL; PICK_CLOSE=${CLOSE_AAPL:-}; PICK_NAME="Apple (AAPL)" ;;
+    SPY)  LIMIT=$LIMIT_SPY;  PICK_CLOSE=${CLOSE_SPY:-};  PICK_NAME="the S&P 500 fund (SPY)" ;;
+    *)    LIMIT=""; PICK_CLOSE=""; PICK_NAME="" ;;
   esac
   save_state
 }
@@ -445,6 +447,8 @@ settle_submission() {
     case "$ST" in new|accepted|pending_new) ST="waiting to be filled" ;; filled) ST="filled" ;; esac
     ok "Alpaca accepted the order: buy $QTY share of $PICK_NAME at up to \$$LIMIT."
     say "      Status at Alpaca: $ST."
+    [ -n "${PICK_CLOSE:-}" ] && say "      Why so low: the last close was \$$PICK_CLOSE. The kit bids about 10% under it, so the order"
+    [ -n "${PICK_CLOSE:-}" ] && say "      waits instead of filling, and step 3 can cancel it. No share is bought."
     say "      ${B}See it yourself:${N} open ${C}$ALPACA_KEYS${N}, switch to your paper account,"
     say "      and open ${B}Orders${N}."
     say "      It is there as: buy $QTY $VERDICT, limit \$$LIMIT. Its client order id is $CLIENT_ID."
@@ -943,7 +947,9 @@ fi
 # Each symbol's limit is about 10% under its last close, so an order should sit open long enough
 # to cancel. It may still fill; step 3 reads what happened.
 lim() { python3 -c 'import json,sys;b=json.load(open(sys.argv[1]))["body"]["bars"][sys.argv[2]];print("%.2f"%(sorted(b,key=lambda x:x["t"])[-1]["c"]*0.9))' "$1" "$2" 2>/dev/null || true; }
+last() { python3 -c 'import json,sys;b=json.load(open(sys.argv[1]))["body"]["bars"][sys.argv[2]];print("%.2f"%sorted(b,key=lambda x:x["t"])[-1]["c"])' "$1" "$2" 2>/dev/null || true; }
 BARS_FILE=$(out_path); LIMIT_AAPL=$(lim "$BARS_FILE" AAPL); LIMIT_SPY=$(lim "$BARS_FILE" SPY)
+CLOSE_AAPL=$(last "$BARS_FILE" AAPL); CLOSE_SPY=$(last "$BARS_FILE" SPY)
 for v in "$LIMIT_AAPL" "$LIMIT_SPY"; do
   printf '%s' "$v" | grep -qE '^[0-9]+\.[0-9]{2}$' || stop "The market read did not give a price to set the limit from." "Check the output above, then run ./open.sh again."
 done
