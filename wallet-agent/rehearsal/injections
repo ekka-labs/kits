@@ -1,7 +1,7 @@
 # name	env var	must see	must NOT have run	must NOT see (optional)
 grant-fails	REHEARSAL_GRANT_FAILS	The permission was not given	^plan run .*wallet\.(sign|send)	
 read-fails	REHEARSAL_STEP1_FAILS	EKKA could not authenticate the Enclave	^plan run .*wallet\.decide|vault\.sign	
-no-verdict	REHEARSAL_NO_VERDICT	not the AI's	vault\.sign|^plan run .*wallet\.send	The AI decides: pay
+no-verdict	REHEARSAL_NO_VERDICT	not the AI's	vault\.sign|^plan run .*wallet\.send	The AI decides: transfer
 ekka-goes-away	REHEARSAL_EKKA_GOES_AWAY	EKKA is not answering right now	^plan run	
 low-balance	REHEARSAL_LOW_BALANCE	Step by step, with MetaMask:  https://docs.ekka.ai/kits/wallet-agent/#what-you-need	^plan run .*wallet\.decide	
 the-ai-holds	REHEARSAL_HOLD	So nothing is signed	vault\.sign|^plan run .*wallet\.(sign|send)	
@@ -10,3 +10,4 @@ wrong-key	REHEARSAL_WRONG_KEY	The sign permission was taken back	^plan run .*wal
 no-test-eth	REHEARSAL_NO_FUNDS	The sign permission was taken back	^plan run .*wallet\.lookup	The network took
 permit-ended	REHEARSAL_PERMIT_ENDS	had already run out	^plan run .*wallet\.send	
 daily-limit	REHEARSAL_DAILY_LIMIT	used all of today's EKKA runs	^plan run .*wallet\.decide	EKKA is not answering
+already-moved	REHEARSAL_ALREADY_MOVED	nothing worth moving above the 0.01 it keeps	^plan run .*wallet\.decide	

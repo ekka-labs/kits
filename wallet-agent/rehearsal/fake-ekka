@@ -8,7 +8,7 @@
 # Every line the kit PARSES is copied from a real answer, measured on prod on 2026-09-25 with the
 # proof plans for this kit: `✓ Plan completed (run <uuid>)`, `Its output is at <path>`,
 # `RESOURCE_GRANT_DENIED: no Grant lets ... sign with a key in the vault`, `grades  decide:
-# decision=pay`, the sign step's output fields, and Blockscout's own answers, including the
+# decision=pay` (the shape; this kit now declares transfer|hold), the sign step's output fields, and Blockscout's own answers, including the
 # send's HTTP 200 with a JSON-RPC error inside and its 429 when the free tier is used up.
 #
 # The wallet is the address of private key 1, a published test value, so the kit's address check
@@ -51,7 +51,7 @@ signed() { # run  digest
   A=$(art "$1" sign "{\"op\":\"sign\",\"resource\":\"keys/SEPOLIA_WALLET_KEY\",\"alg\":\"secp256k1\",\"digest\":\"$2\",\"signature_sha256_b64\":\"x\",\"signature\":\"0x$(printf '%064x' 7)$(printf '%064x' 11)\",\"recovery_id\":1,\"public_key\":\"$PK\"}")
   completed "$1" sign "$A"
 }
-decision() { if [ -n "${REHEARSAL_HOLD:-}" ]; then echo hold; elif [ -n "${REHEARSAL_INVALID:-}" ]; then echo invalid; else echo pay; fi; }
+decision() { if [ -n "${REHEARSAL_HOLD:-}" ]; then echo hold; elif [ -n "${REHEARSAL_INVALID:-}" ]; then echo invalid; else echo transfer; fi; }
 
 case "$1 $2" in
   "--version ") echo "ekka $VERSION" ;;
@@ -88,9 +88,9 @@ case "$1 $2" in
      v=$(cat "$S/decision-$3" 2>/dev/null || true)
      echo ""; echo "  Run $3"
      case "$v" in
-       pay|hold)
+       transfer|hold)
          echo "    grades       decide: decision=$v"
-         echo "  {\"decision\": \"$v\", \"explanation\": \"The payee is on the approved list. After paying 0.001 and a fee of up to 0.00042, 0.0486 test ETH is left, above the 0.01 minimum.\"}" ;;
+         echo "  {\"decision\": \"$v\", \"explanation\": \"The savings wallet is on the list, and the everyday wallet holds 0.05 test ETH, more than the 0.01 it keeps. Moving the prepared 0.0398 leaves at least 0.01 after the fee.\"}" ;;
        invalid)
          echo "    status       failed"; echo "    error        WORKFLOW_FAILED"
          echo "    detail       plan_transitioned_to_fail: operation transitioned to reserved \"fail\" target" ;;
@@ -100,7 +100,11 @@ case "$1 $2" in
       *wallet.balance*)
          if [ -n "${REHEARSAL_STEP1_FAILS:-}" ]; then echo "ekka plan: the Enclave refused the request (-32001): govern dispatch failed: GOVERN_AUTH_REJECTED ()" >&2; exit 1; fi
          W=50000000000000000; [ -n "${REHEARSAL_LOW_BALANCE:-}" ] && W=2000000000000000
+         # ⚠️ The stand-in does not move balance between wallets, so `./open.sh steps` after a walk still
+         # has extra to move. The real second walk, where the extra already went to savings, is its
+         # own injection: REHEARSAL_ALREADY_MOVED holds about 0.01 from the start.
          [ -f "$S/paid" ] && W=49969000000000000
+         [ -n "${REHEARSAL_ALREADY_MOVED:-}" ] && W=10069000000000000
          R=$(next_run); A=$(art "$R" call "{\"resource\":\"apis/$ORG/eth-sepolia\",\"status\":200,\"body\":{\"hash\":\"0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf\",\"coin_balance\":\"$W\"}}")
          completed "$R" call "$A" ;;
       *wallet.sent*) R=$(next_run)
@@ -114,7 +118,7 @@ case "$1 $2" in
          if [ -n "${REHEARSAL_NO_VERDICT:-}" ]; then echo "✗ Plan failed (run $R)."; echo "  GOVERN_HTTP_ERROR (402) credit_exhausted"; exit 2; fi
          d=$(decision); printf '%s' "$d" > "$S/decision-$R"
          case "$d" in
-           pay) if [ -f "$S/signgrant" ]; then signed "$R" "$(input_of digest "$@")"; else denied_sign "$R"; fi ;;
+           transfer) if [ -f "$S/signgrant" ]; then signed "$R" "$(input_of digest "$@")"; else denied_sign "$R"; fi ;;
            hold) echo "✓ Plan completed (run $R)." ;;
            *) echo "✗ Plan failed (run $R)."; echo "  WORKFLOW_FAILED"; exit 2 ;;
          esac ;;

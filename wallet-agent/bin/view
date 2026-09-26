@@ -46,9 +46,9 @@ def row(label, k):
     v, t = fact(k)
     return f"<tr><th>{e(label)}</th><td>{v}</td><td class=t>{t}</td></tr>"
 
-AUTH = (("network_read", "Sepolia, read", "your balance, the payments you sent, fees, one payment by hash"),
-        ("send", "Sepolia, send", "only a payment that is already signed: it cannot make, change or sign one"),
-        ("sign", "Sign with your wallet key", "for as long as you chose, then revoked or ended by itself: EKKA sees a fingerprint, so ANY payment could be signed while it lasts"))
+AUTH = (("network_read", "Sepolia, read", "your balance, the transfers you sent, fees, one transfer by hash"),
+        ("send", "Sepolia, send", "only a transfer that is already signed: it cannot make, change or sign one"),
+        ("sign", "Sign with your wallet key", "for as long as you chose, then revoked or ended by itself: EKKA sees a fingerprint, so ANY transfer could be signed while it lasts"))
 auth_rows = ""
 for k, label, scope in AUTH:
     a = ev["authority"].get(k)
@@ -75,11 +75,11 @@ table{{border-collapse:collapse;width:100%}} th,td{{text-align:left;padding:6px 
 <h1>Wallet Kit: evidence</h1>
 <div class=sub>Rendered {e(now())} from evidence.json. Read only: this page runs nothing. Every line carries the time it was true; nothing here is live.</div>
 
-<h2>The invoice and the rule</h2>
-<div class=card><p>Pay 0.001 test ETH for September API credits. <b>Rule:</b> pay only if the payee is on the approved list and at least 0.01 test ETH is left after the payment and the fee. Otherwise hold. Edit it in <code>bin/prompt</code>.</p></div>
+<h2>The rule</h2>
+<div class=card><p><b>Rule:</b> when the everyday wallet holds more than 0.01 test ETH, move the extra to the savings wallet. The kit works out the amount and the address; the AI decides only transfer or hold. Edit the rule in <code>bin/prompt</code>.</p></div>
 
 <h2>Where it ran</h2>
-<div class=card><table>{row("Model", "model_where")}{row("Execution", "exec_where")}{row("Wallet", "wallet")}{row("Payee", "payee")}</table></div>
+<div class=card><table>{row("Model", "model_where")}{row("Execution", "exec_where")}{row("Wallet", "wallet")}{row("Savings wallet", "savings")}</table></div>
 
 <h2>The decision</h2>
 <div class=card><div class=verdict>{verdict}</div><div class=t>{vt}</div><p>{fact("explanation", "")[0]}</p></div>
@@ -87,8 +87,8 @@ table{{border-collapse:collapse;width:100%}} th,td{{text-align:left;padding:6px 
 <h2>Authority, as of the time shown</h2>
 <div class=card><table><tr><th>Authority</th><th>State</th><th>Covers</th><th>As of</th></tr>{auth_rows}</table></div>
 
-<h2>The payment</h2>
-<div class=card><table>{row("Payment hash", "tx")}{row("Network status", "tx_status")}</table>
+<h2>The transfer</h2>
+<div class=card><table>{row("Transfer hash", "tx")}{row("Network status", "tx_status")}</table>
 <p>See it yourself: <code>https://eth-sepolia.blockscout.com/tx/{fact("tx", "")[0]}</code></p></div>
 
 <h2>History</h2>

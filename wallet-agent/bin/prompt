@@ -3,34 +3,42 @@
 
     prompt <inputs.json> <out.txt>
 
-The AI decides whether to pay one invoice. The rule is the kit's example; edit RULE below and it
-is your rule. Nothing else reaches the AI: no key, no other payment, no other wallet."""
+The AI decides whether to move the extra in an everyday wallet to its savings wallet. The rule is
+the kit's example; edit RULE below and it is your rule. Nothing else reaches the AI: no key, no
+other transfer, no other wallet.
+
+⛔ THE AI DECIDES YES OR NO, NEVER HOW MUCH OR WHERE. open.sh works out the amount and the address
+before this message is written, and the plan lets only the words `transfer` or `hold` cross to
+EKKA. So no answer can send more than the extra, or send it anywhere but the savings wallet."""
 import json, sys
 
-RULE = ("Pay only if BOTH are true:\n"
-        "1. The payee is on the approved list.\n"
-        "2. After paying the amount and a network fee of up to {fee_cap} test ETH, at least {floor} test ETH is left.\n"
+RULE = ("Transfer only if BOTH are true:\n"
+        "1. The savings wallet is on the list.\n"
+        "2. The everyday wallet holds more than {keep} test ETH, so there is extra to move.\n"
+        "The transfer moves only the extra: {amount} test ETH, which leaves at least {keep} test ETH\n"
+        "after a network fee of up to {fee_cap} test ETH.\n"
         "Otherwise hold.")
 
 if len(sys.argv) != 3:
     print("usage: prompt <inputs.json> <out.txt>"); sys.exit(1)
 i = json.load(open(sys.argv[1]))
-approved = "\n".join(f"  - {a}" for a in i["approved"]) or "  (none)"
-msg = f"""You decide whether to pay one invoice, using the rule below. Sepolia test network only: test ETH has no value.
+listed = "\n".join(f"  - {a}" for a in i["savings_list"]) or "  (none)"
+msg = f"""You decide whether to move the extra in an everyday wallet to its savings wallet, using the rule below. Sepolia test network only: test ETH has no value.
 
 RULE:
-{RULE.format(fee_cap=i['fee_cap_eth'], floor=i['floor_eth'])}
+{RULE.format(keep=i['keep_eth'], amount=i['amount_eth'], fee_cap=i['fee_cap_eth'])}
 
 INPUTS:
-- The invoice: pay {i['amount_eth']} test ETH to {i['payee']} for {i['for']}.
-- The approved list:
-{approved}
-- The wallet's balance now: {i['balance_eth']} test ETH (read from the network just now).
+- The everyday wallet's balance now: {i['balance_eth']} test ETH (read from the network just now).
+- The amount the rule keeps in it: {i['keep_eth']} test ETH.
+- The transfer the kit prepared: {i['amount_eth']} test ETH to the savings wallet {i['savings']}.
+- The list of savings wallets:
+{listed}
 
-Use only these inputs.
+Use only these inputs. You do not choose the amount or the address: you decide only whether this transfer goes ahead.
 
 Answer with JSON and nothing else, in exactly this shape:
-{{"decision": "pay" | "hold", "explanation": "<two sentences at most, naming the numbers you used>"}}
+{{"decision": "transfer" | "hold", "explanation": "<two sentences at most, naming the numbers you used>"}}
 """
 open(sys.argv[2], "w").write(msg)
 print(msg)

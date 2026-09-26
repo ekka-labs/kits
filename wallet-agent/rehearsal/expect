@@ -1,47 +1,62 @@
-# One screen this kit MUST print, per line, in the four-step walk: the AI is asked ONCE, its pay is
-# stopped without permission, signed and sent with the person's permission (through one busy
-# answer, retried with the same bytes), confirmed, the permission taken back, the same payment
-# stopped again, the record checked, and the plain summary.
-Let an AI pay for you. You decide what it may do.
+# One screen this kit MUST print, per line, in the four-step walk: the AI is asked ONCE, its transfer
+# is stopped without permission, signed and sent with the person's permission (through one busy
+# answer, retried with the same bytes), confirmed, the permission taken back, the same transfer
+# stopped again, the record checked, and the plain summary. The amount is the KIT'S: 0.0500 held,
+# 0.01 kept, the fee cap taken off, rounded down to 0.0398.
+Let an AI move your crypto. It never sees your private key, and neither does EKKA.
 Security   The AI can do only what you allowed
 two minutes: https://docs.ekka.ai/kits/wallet-agent/#what-you-need
-EKKA NEVER SEES YOUR PRIVATE KEY.
-Your key is stored on this computer, encrypted
+YOUR PRIVATE KEY NEVER LEAVES THIS COMPUTER. Not to EKKA, not to the AI.
+EKKA and the AI could only ask it to sign, and only while you allowed that.
+Your key is stored on this computer, encrypted. The AI cannot see it, and neither can EKKA.
+They can only ask your Enclave to sign with it, and only while you allow that.
+Your savings wallet address (Enter: this same wallet):
 Added the Sepolia test network to your catalog
 Created your AI agent
-Saved its plan: decide whether to pay, then sign
+Saved its plan: decide whether to move the extra, then sign
+Allowed it to send a transfer that is already signed
 Allowed it to ask the AI
 Your AI agent is ready. It may NOT sign
-Your wallet holds 0.0500 test ETH
+Your everyday wallet holds 0.0500 test ETH
 What the AI is sent
+Your rule: when your everyday wallet holds more than 0.01 test ETH, move the extra to savings.
+Your savings wallet: 0x2b5a…d6cf, on your list.
+The transfer the kit prepared: 0.0398 test ETH to savings, leaving at least 0.01.
 Nothing else: not your private key
+The AI decides only yes or no. The kit worked out the amount and the address
 You control this message
-The AI decides: pay.
-EKKA stopped the payment.
-See it yourself: no new payment is on your wallet's page
+The AI decides: transfer.
+EKKA stopped the transfer.
+See it yourself: nothing new is on your wallet's page
 https://eth-sepolia.blockscout.com/address/0x7e5f4552091a69125d5dfcb7b8c2659029395bdf
-not who is paid or how much
-may sign ANY payment with this key, not only this one
+It does not restrict the
+with this key, to anyone, any amount, not only this one.
 Permission given, for 10 minutes
 The AI is not asked again
+0.0398 test ETH to your savings wallet, 0x2b5a…d6cf.
 The signature belongs to your wallet
 The Sepolia service is busy right now
-Sending again is safe: it is the same signed payment
-The network took the payment.
-The network confirmed it: 0.001 test ETH
-See it yourself: it is the newest payment on your wallet's page
+Sending again is safe: it is the same signed transfer
+The network took the transfer.
+The network confirmed it: 0.0398 test ETH to your savings wallet
+See it yourself: it is the newest transfer on your wallet's page
 Its hash begins 0x
 network charged a fee of 0.000031 test ETH
+Your everyday wallet keeps at
 Test ETH has no value.
 Permission taken back.
 EKKA stopped it. The permission is yours
-the newest payment on your wallet's page is still the one from step 2
+the newest transfer on your wallet's page is still the one from step 2
 Nothing new was sent:
 The record checks out. Nothing in it was changed.
-1. The AI decided to pay
-EKKA NEVER SAW YOUR PRIVATE KEY. To decide yes or no, EKKA's control plane was sent
+1. The AI decided to transfer the extra
+YOUR PRIVATE KEY NEVER LEFT THIS COMPUTER. To decide yes or no, EKKA's control plane
+was sent the message to the AI, which names the amount and the savings wallet.
 The AI gate carried the message to the model, a third party, not EKKA.
-To decide yes or no, EKKA's control plane is sent the message to the AI and the
+It saw only your rule, your balance, your savings wallet and the amount. Never your key.
+To decide yes or no, EKKA's control plane is sent the message to the AI, which names
 The AI gate carries the message to the model, a third party, not EKKA.
 Want your own model instead?
-Good to know: while a sign permission lasts, the agent may sign ANY payment
+Good to know: while a sign permission lasts, the agent may sign ANY transfer
+Revoking permission prevents new
+signatures. It cannot invalidate a signature already created or undo a confirmed transfer.

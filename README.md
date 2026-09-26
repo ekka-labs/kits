@@ -11,7 +11,7 @@ that is the point of publishing it.
 
 | Kit | The claim | Time |
 |---|---|---|
-| [`wallet-agent`](wallet-agent/) | Let an AI pay for you, and decide what it may do. A hosted model checks an invoice against your rule and your live balance, and decides to pay. EKKA stops the signature until you give it permission to sign, for as long as you choose; your Enclave signs with the key it holds. You take the permission back, and the next payment is stopped. Sepolia test network: test ETH has no value, the model call, the signing and the permission checks are real. | Sepolia test network |
+| [`wallet-agent`](wallet-agent/) | Let an AI move your crypto. It never sees your private key, and neither does EKKA. A hosted model checks your everyday wallet against your rule and decides whether to move the extra to your savings wallet; the kit, never the AI, sets the amount and the address. EKKA stops the signature until you give it permission to sign, for as long as you choose; your Enclave signs with the key it holds. You take the permission back, and the next transfer is stopped. Sepolia test network: test ETH has no value, the model call, the signing and the permission checks are real. | Sepolia test network |
 | [`financial-api-agent`](financial-api-agent/) | Let an AI trade for you, and decide what it may do. A hosted model applies your Apple-vs-S&P 500 rule to real prices and picks one to buy. EKKA stops its order until you give it permission to trade, for as long as you choose. You take the permission back, and the next order is stopped. Paper account: the orders are simulated, the model call and the permission checks are real. | paper trading |
 
 Two kits today. The next ones are chosen by what people build with these.

@@ -5,14 +5,14 @@
     write-plans lookup <dir> <agent> <api instance> <row> <hash>
 
   wallet.balance.json  read your wallet's balance                    (Sepolia, read)
-  wallet.sent.json     list the payments your wallet has sent        (Sepolia, read)
+  wallet.sent.json     list the transfers your wallet has sent       (Sepolia, read)
   wallet.fees.json     read the network's fee levels                 (Sepolia, read)
-  wallet.decide.json   THE AI PLAN: the AI decides pay or hold; ONLY   (model use, then
-                       `pay` leads to the step that signs the payment  signing with your key)
-  wallet.sign.json     sign the AI's recorded payment again. The AI is  (signing with your key)
+  wallet.decide.json   THE AI PLAN: the AI decides transfer or hold;   (model use, then
+                       ONLY `transfer` leads to the step that signs     signing with your key)
+  wallet.sign.json     sign the AI's recorded transfer again. The AI is (signing with your key)
                        NOT asked again
-  wallet.send.json     send a payment that is already signed          (Sepolia, send)
-  wallet.lookup.json   look one payment up by its hash, written when there is a payment to name
+  wallet.send.json     send a transfer that is already signed         (Sepolia, send)
+  wallet.lookup.json   look one transfer up by its hash, written when there is one to name
 
 ⛔ YOUR ADDRESS IS WRITTEN INTO THE READ PLANS, NOT PASSED AS AN INPUT. An `@input` inside a URL
 path is fixed when the plan is created, so a plan input there would send its own name, not your
@@ -30,7 +30,7 @@ def contract(op):
 
 def api(ainst, row, step_id, op, call, inputs):
     # EVERY STEP SAYS WHAT A SUCCESS LOOKS LIKE. A step with no `expect` cannot fail.
-    # ⚠️ The send answers HTTP 200 even when the network refuses the payment (the refusal is in the
+    # ⚠️ The send answers HTTP 200 even when the network refuses the transfer (the refusal is in the
     # body), so for `send` this proves only that the request arrived. open.sh reads the body.
     return {"id": step_id, "action_ref": "ekka.gate.api.v1", "target": ainst, "op": op, "call": call,
             "inputs": dict({"resource": f"apis/{row}"}, **inputs, expect={"status": 200}), "action_input": {},
@@ -51,7 +51,7 @@ def op(op_id, title, steps, transitions=None, model=None):
 
 def sign(key):
     # The Enclave signs the 32 bytes it is given and does not hash for the caller, so what it
-    # signs is exactly the fingerprint bin/tx made of the payment. It returns the signature and
+    # signs is exactly the fingerprint bin/tx made of the transfer. It returns the signature and
     # the public key; the key itself never leaves the Enclave.
     return {"id": "sign", "action_ref": "ekka.local.secret.sign.v1", "feature": "secret.vault.sign",
             "resource": f"keys/{key}", "action_input": {},
@@ -63,7 +63,7 @@ def sign(key):
                                ["op", "resource", "alg", "digest", "public_key", "recovery_id", "signature", "signature_sha256_b64"]}}}
 
 def think(llm, model):
-    # The decision CROSSES to EKKA as a bounded fact only if it is exactly `pay` or `hold`.
+    # The decision CROSSES to EKKA as a bounded fact only if it is exactly `transfer` or `hold`.
     # Anything else is absent, the transitions below are all false, and the op falls to
     # `default`, which is `fail`: an unclear answer can never reach the signing step.
     return {"id": "think", "action_ref": "ekka.gate.llm.v1", "feature": "llm.infer", "target": llm,
@@ -72,14 +72,14 @@ def think(llm, model):
             "inputs": {"user_message": "@input.user_message"},
             "step_input_contract": {"type": "object", "required": ["user_message"], "properties": {"user_message": {"type": "string"}}},
             "step_output_contract": {"type": "object", "required": ["text"], "properties": {
-                "text": {"type": "string"}, "decision": {"type": "string", "enum": ["pay", "hold"]}}},
+                "text": {"type": "string"}, "decision": {"type": "string", "enum": ["transfer", "hold"]}}},
             "identity": IDENT}
 
 def main(argv):
     if len(argv) == 6 and argv[0] == "lookup":
         d, agent, ainst, row, h = argv[1:]
-        p = plan(agent, "wallet.lookup", "Look one payment up by its hash", {},
-                 [op("lookup", f"Look up payment {h[:10]}", [api(ainst, row, "call", "read", "payment", {"hash": h})])])
+        p = plan(agent, "wallet.lookup", "Look one transfer up by its hash", {},
+                 [op("lookup", f"Look up transfer {h[:10]}", [api(ainst, row, "call", "read", "payment", {"hash": h})])])
         json.dump(p, open(os.path.join(d, "wallet.lookup.json"), "w"), indent=2)
         return 0
     if len(argv) != 8:
@@ -91,24 +91,25 @@ def main(argv):
                                          {} if call == "fees" else {"address": address})])])
     plans = {
         "wallet.balance": one("wallet.balance", "Read your wallet's balance", "balance"),
-        "wallet.sent": one("wallet.sent", "List the payments your wallet has sent", "sent"),
+        "wallet.sent": one("wallet.sent", "List the transfers your wallet has sent", "sent"),
         "wallet.fees": one("wallet.fees", "Read the network's fee levels", "fees"),
-        # THE AI PLAN. One AI call decides pay or hold; only `pay` leads to the signing step.
-        "wallet.decide": plan(agent, "wallet.decide", "The AI decides pay or hold, and a pay is signed",
-            {"user_message": "The one message the AI is sent: the invoice, the rule and the numbers.",
-             "digest": "The payment's fingerprint, 64 hex characters, made by bin/tx before the AI is asked."},
-            [op("decide", "The AI decides pay or hold from the invoice and the rule", [think(llm, model)], {
-                    "output.decision == 'pay'": "signIt",
+        # THE AI PLAN. One AI call decides transfer or hold; only `transfer` leads to the signing
+        # step. The amount and the address are already inside the fingerprint: the AI cannot change them.
+        "wallet.decide": plan(agent, "wallet.decide", "The AI decides transfer or hold, and a transfer is signed",
+            {"user_message": "The one message the AI is sent: the rule, the balance and the prepared transfer.",
+             "digest": "The transfer's fingerprint, 64 hex characters, made by bin/tx before the AI is asked."},
+            [op("decide", "The AI decides transfer or hold from the rule and the balance", [think(llm, model)], {
+                    "output.decision == 'transfer'": "signIt",
                     "output.decision == 'hold'": "end",
                     "default": "fail"}, model=model),
-             op("signIt", "The AI said pay: the Enclave signs the payment", [sign(key)], {"default": "end"})]),
-        # The AI's recorded pay, signed again. The AI is NOT asked again.
-        "wallet.sign": plan(agent, "wallet.sign", "Sign the AI's recorded payment again",
-            {"digest": "The payment's fingerprint, 64 hex characters."},
-            [op("sign", "Sign the AI's recorded payment", [sign(key)])]),
-        "wallet.send": plan(agent, "wallet.send", "Send one payment that is already signed",
-            {"raw_tx": "The signed payment, as bin/tx assembled it."},
-            [op("send", "Send one payment that is already signed", [api(ainst, row, "call", "write", "send", {"raw_tx": "@input.raw_tx"})])]),
+             op("signIt", "The AI said transfer: the Enclave signs the transfer", [sign(key)], {"default": "end"})]),
+        # The AI's recorded transfer, signed again. The AI is NOT asked again.
+        "wallet.sign": plan(agent, "wallet.sign", "Sign the AI's recorded transfer again",
+            {"digest": "The transfer's fingerprint, 64 hex characters."},
+            [op("sign", "Sign the AI's recorded transfer", [sign(key)])]),
+        "wallet.send": plan(agent, "wallet.send", "Send one transfer that is already signed",
+            {"raw_tx": "The signed transfer, as bin/tx assembled it."},
+            [op("send", "Send one transfer that is already signed", [api(ainst, row, "call", "write", "send", {"raw_tx": "@input.raw_tx"})])]),
     }
     os.makedirs(d, exist_ok=True)
     for code, p in plans.items():

@@ -4,7 +4,7 @@
     show-verdict <file holding `ekka run show <run>` output> [--word]
 
 The decision is the one EKKA ACTED ON: the bounded fact the Enclave let cross, printed by
-`ekka run show` as `grades  decide: decision=<pay|hold>` (measured on prod 2026-09-25). The
+`ekka run show` as `grades  decide: decision=<transfer|hold>` (the shape measured on prod 2026-09-25 with pay|hold). The
 Enclave lets it cross only if the AI's JSON reply names exactly one of the two declared words.
 
 No decision fact has two causes, never confused: the plan took its default branch
@@ -20,7 +20,7 @@ try:
     text = open(args[0]).read()
 except Exception:
     text = ""
-m = re.search(r"grades\s+decide:\s*decision=(pay|hold)\b", text)
+m = re.search(r"grades\s+decide:\s*decision=(transfer|hold)\b", text)
 word = m.group(1) if m else ("invalid_model_output" if "plan_transitioned_to_fail" in text else "no_verdict")
 why = ""
 for block in re.findall(r"\{[^{}]*\"decision\"[^{}]*\}", text):

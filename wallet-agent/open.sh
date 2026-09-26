@@ -1,7 +1,8 @@
 #!/bin/sh
-# Wallet Kit: your AI decides whether to pay, your Enclave signs, you control what it is allowed
-# to do. A hosted model applies YOUR rule to one invoice and your live balance; its `pay` is the
-# only thing that can lead to a signature, and only while you have given permission to sign.
+# Wallet Kit: your AI decides whether to move the extra in your everyday wallet to your savings
+# wallet, your Enclave signs, you control what it is allowed to do. A hosted model applies YOUR rule
+# to your live balance; its `transfer` is the only thing that can lead to a signature, and only
+# while you have given permission to sign. THE KIT, NOT THE AI, SETS THE AMOUNT AND THE ADDRESS.
 # Sepolia test network only: test ETH has no value.
 # It touches your wallet's private key exactly once: reads it at a hidden prompt, checks the
 # shape, hands it to the Enclave, forgets it. Everything else is plans, grants and explanations.
@@ -21,11 +22,11 @@ FAUCET2=https://www.alchemy.com/faucets/ethereum-sepolia
 # The docs section with MetaMask AND the faucets. `#what-you-need` exists on the kit 1.0 page and
 # on the 2.0 page alike, so this link works before and after the new page ships.
 WALLET_HELP=https://docs.ekka.ai/kits/wallet-agent/#what-you-need
-AMOUNT_WEI=1000000000000000               # 0.001 test ETH
-AMOUNT_ETH=0.001
-FLOOR_ETH=0.01                            # the rule keeps at least this much
-FLOOR_WEI=10000000000000000
-GAS=21000                                 # a plain payment always uses exactly this much
+KEEP_ETH=0.01                             # the rule keeps at least this much in the everyday wallet
+KEEP_WEI=10000000000000000
+MIN_MOVE_WEI=1000000000000000             # less extra than 0.001 test ETH is not worth a transfer
+AMOUNT_WEI=""; AMOUNT_ETH=""              # set in step 1 by the kit, from the balance: never by the AI
+GAS=21000                                 # a plain transfer always uses exactly this much
 DOCS=https://docs.ekka.ai
 KIT_DOC=https://github.com/ekka-labs/kits/tree/main/wallet-agent
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -60,7 +61,7 @@ trace() { mkdir -p "$VIEWD" 2>/dev/null && printf '%s %s\n' "$(date +%H:%M:%S)" 
 ask()   { printf "  ${Y}%s${N} " "$1"; trace "waiting for a key: $1"; read -r REPLY <&3 || REPLY=""; trace "got: ${REPLY:-Enter}"; }
 wait_enter() { printf "  ${Y}%s${N} " "$1"; trace "waiting for a key: $1"; read -r REPLY <&3 || REPLY=q; trace "got: ${REPLY:-Enter}"; case "$REPLY" in q|Q) say ""; say "  Stopped. Inspect the saved attempt with: ./open.sh steps"; say ""; exit 0 ;; esac; }
 OUTF=$(mktemp)
-# ONE WALK PER FOLDER. Two walks share one saved state and one payment number, and each would act
+# ONE WALK PER FOLDER. Two walks share one saved state and one transfer number, and each would act
 # on the other's half-finished attempt. A lock whose process is gone is stale and is taken over.
 LOCK="$HERE/.walk.lock"; HAVE_LOCK=""
 take_lock() {
@@ -117,7 +118,7 @@ show_failure() { sed 's/^/      /' "$OUTF" | while IFS= read -r l; do say "${R}$
 
 stop_walk() {
   # ⛔ A STOP NEVER LEAVES A SIGN PERMISSION BEHIND. While one lasts, the agent may sign ANY
-  # payment with this key, so a walk that stops after step 2 gave it takes it back first.
+  # transfer with this key, so a walk that stops after step 2 gave it takes it back first.
   if [ -n "${SIGN_GRANT_ID:-}" ] && [ -n "${SIGN_INTENT:-}" ]; then
     spin_stop
     if run gate grant revoke "$SIGN_GRANT_ID" >/dev/null 2>&1; then
@@ -179,8 +180,11 @@ SINST='$SINST'
 LLM='$LLM'
 MODEL='$MODEL'
 API_ROW='$API_ROW'
+KIT_MAJOR=3
 ADDRESS='$ADDRESS'
-PAYEE='$PAYEE'
+SAVINGS='$SAVINGS'
+AMOUNT_WEI='${AMOUNT_WEI:-}'
+AMOUNT_ETH='${AMOUNT_ETH:-}'
 BAL_VER='$BAL_VER'
 SNT_VER='$SNT_VER'
 FEE_VER='$FEE_VER'
@@ -202,15 +206,18 @@ read_plan() {  # label  plan
   P=$(out_path)
 }
 
-# ⛔ A LOW BALANCE NEVER REACHES THE AI. If the wallet cannot pay the invoice, the fee and still keep
-# the rule's floor, the AI would rightly say hold and the walk would show nothing. So the kit stops
-# BEFORE the AI is asked, at setup and again at step 1, and says how to get free test ETH.
+# ⛔ A LOW BALANCE NEVER REACHES THE AI. If the everyday wallet holds no extra above what the rule
+# keeps, the AI would rightly say hold and the walk would show nothing. So the kit stops BEFORE the
+# AI is asked, at setup and again at step 1, and says how to put test ETH back. This is also what a
+# SECOND walk meets: the first one moved the extra to savings.
 funds_check() {  # output.json of a balance read. Sets BAL_WEI and BAL_ETH, or stops.
   BAL_WEI=$("$HERE/bin/wallet" wei "$1"); BAL_ETH=$("$HERE/bin/wallet" balance "$1")
-  NEED_WEI=$((AMOUNT_WEI + FLOOR_WEI + GAS * 20000000000))
-  [ "$BAL_WEI" -ge "$NEED_WEI" ] && return 0
-  say "  ${Y}Your wallet holds $BAL_ETH test ETH.${N} The walk needs at least $(eth_of "$NEED_WEI"): the $AMOUNT_ETH"
-  say "  payment, the network fee, and the $FLOOR_ETH the rule keeps. Test ETH is free. One minute:"
+  NEED_WEI=$((KEEP_WEI + MIN_MOVE_WEI + GAS * 20000000000))
+  # Compared in python: a balance in wei passes the shell's 64-bit limit above about 9.2 ETH.
+  python3 -c 'import sys; sys.exit(0 if int(sys.argv[1]) >= int(sys.argv[2]) else 1)' "$BAL_WEI" "$NEED_WEI" && return 0
+  say "  ${Y}Your everyday wallet holds $BAL_ETH test ETH:${N} nothing worth moving above the $KEEP_ETH it keeps."
+  say "  The walk needs at least $(eth_of "$NEED_WEI"). Test ETH is free."
+  [ "$SAVINGS" != "$ADDRESS" ] && say "  Moved it to savings in an earlier walk? Send some back to $(short "$ADDRESS") in MetaMask. Or:"
   say "    1. Open ${C}$FAUCET${N}"
   say "    2. Sign in with a Google account, paste $(short "$ADDRESS"), click ${B}Receive 0.05 Sepolia ETH${N}."
   say "    3. Wait about a minute, then run ${C}./open.sh steps${N}"
@@ -220,19 +227,36 @@ funds_check() {  # output.json of a balance read. Sets BAL_WEI and BAL_ETH, or s
   stop_walk
 }
 
-# Build the payment: the next payment number, today's fee cap, 0.001 test ETH to the payee.
-# Writes pay.json and sets DIGEST, the 64 characters the Enclave will sign. Sets NONCE.
+# Build the transfer: the next transfer number, today's fee cap, the extra to the savings wallet.
+# Writes transfer.json and sets DIGEST, the 64 characters the Enclave will sign. Sets NONCE.
+# ⛔ THE AMOUNT IS THE KIT'S, WORKED OUT HERE FROM THE BALANCE, NEVER THE AI'S. The first build
+# (step 1) sets it: everything above what the rule keeps, less the most the fee can be, rounded
+# DOWN to 0.0001, so at least $KEEP_ETH is left whatever the fee turns out to be. Step 4 builds the
+# same transfer again with the next number, and keeps this amount.
 build_payment() {  # [nonce]
-  if [ -n "${1:-}" ]; then NONCE=$1
-  else read_plan "Reading your wallet's payments" "$SNT_VER"; NONCE=$("$HERE/bin/wallet" nonce "$P"); fi
+  # ⚠️ Read the argument FIRST: `set --` below reuses $1 for the fee, and a check of $1 after it
+  # would read the fee (found by the rehearsal: the amount was never set).
+  AGAIN=${1:-}
+  if [ -n "$AGAIN" ]; then NONCE=$AGAIN
+  else read_plan "Reading your wallet's transfers" "$SNT_VER"; NONCE=$("$HERE/bin/wallet" nonce "$P"); fi
   read_plan "Reading the network's fees" "$FEE_VER"
   set -- $("$HERE/bin/wallet" fees "$P"); MAXFEE=${1:-}; TIP=${2:-}
   printf '%s' "$MAXFEE" | grep -qE '^[0-9]+$' || { say "      ${R}The network did not say what fees are today.${N} Try again in a minute."; stop_walk; }
-  cat > "$HERE/pay.json" <<EOF
-{"chain_id": $CHAIN_ID, "nonce": $NONCE, "max_priority_fee_per_gas": $TIP, "max_fee_per_gas": $MAXFEE, "gas": $GAS, "to": "$PAYEE", "value": $AMOUNT_WEI, "data": "0x"}
-EOF
-  DIGEST=$("$HERE/bin/tx" digest "$HERE/pay.json") || { say "      ${R}The payment could not be built.${N}"; stop_walk; }
   FEE_CAP_WEI=$((GAS * MAXFEE))
+  if [ -z "$AGAIN" ]; then
+    # In python, not $(( )): the balance in wei can pass the shell's 64-bit limit.
+    AMOUNT_WEI=$(python3 -c 'import sys; b, k, f = map(int, sys.argv[1:]); print(max(0, (b - k - f) // 10**14 * 10**14))' "$BAL_WEI" "$KEEP_WEI" "$FEE_CAP_WEI")
+    if python3 -c 'import sys; sys.exit(0 if int(sys.argv[1]) < int(sys.argv[2]) else 1)' "$AMOUNT_WEI" "$MIN_MOVE_WEI"; then
+      say "  ${Y}After today's network fee there is less than 0.001 test ETH above the $KEEP_ETH your rule keeps.${N}"
+      say "  Nothing is worth moving, so the AI is not asked. Add test ETH, then ${C}./open.sh steps${N}"
+      stop_walk
+    fi
+    AMOUNT_ETH=$(python3 -c 'import sys; print("%.4f" % (int(sys.argv[1]) / 1e18))' "$AMOUNT_WEI")
+  fi
+  cat > "$HERE/transfer.json" <<EOF
+{"chain_id": $CHAIN_ID, "nonce": $NONCE, "max_priority_fee_per_gas": $TIP, "max_fee_per_gas": $MAXFEE, "gas": $GAS, "to": "$SAVINGS", "value": $AMOUNT_WEI, "data": "0x"}
+EOF
+  DIGEST=$("$HERE/bin/tx" digest "$HERE/transfer.json") || { say "      ${R}The transfer could not be built.${N}"; stop_walk; }
 }
 
 # The decision of the run just shown, from what EKKA recorded. Sets DECISION.
@@ -244,9 +268,9 @@ read_verdict() {
   DECISION=$("$HERE/bin/show-verdict" "$OUTF.show" --word 2>/dev/null || echo no_verdict)
   WHY=$("$HERE/bin/show-verdict" "$OUTF.show" | sed -n 's/^explanation   //p')
   case "$DECISION" in
-    pay)  say "      ${B}The AI decides: pay.${N}" ;;
-    hold) say "      ${B}The AI decides: hold.${N}" ;;
-    invalid_model_output) say "      ${B}The AI did not answer clearly with pay or hold.${N}" ;;
+    transfer) say "      ${B}The AI decides: transfer.${N}" ;;
+    hold)     say "      ${B}The AI decides: hold.${N}" ;;
+    invalid_model_output) say "      ${B}The AI did not answer clearly with transfer or hold.${N}" ;;
   esac
   [ -n "$WHY" ] && printf 'Its reason: %s\n' "$WHY" | fold -s -w 88 | while IFS= read -r l; do say "      $l"; done
   if [ "$DECISION" = no_verdict ]; then
@@ -256,51 +280,51 @@ read_verdict() {
   vw set decision "$DECISION"; vw set explanation "$WHY"
 }
 
-# Sign the recorded payment with the permission live, check the key is this wallet's, assemble.
+# Sign the recorded transfer with the permission live, check the key is this wallet's, assemble.
 # Sets RAW and TX_HASH. Refuses to go on if the Enclave's key belongs to another address.
 signed_payment() {  # output.json of a sign step
   SIG=$(field "$1" signature); RID_=$(field "$1" recovery_id); PUB=$(field "$1" public_key); SIGNED=$(field "$1" digest)
-  [ "$SIGNED" = "$DIGEST" ] || { say "      ${R}The Enclave signed something other than this payment.${N} Nothing is sent."; stop_walk; }
+  [ "$SIGNED" = "$DIGEST" ] || { say "      ${R}The Enclave signed something other than this transfer.${N} Nothing is sent."; stop_walk; }
   WHO=$("$HERE/bin/tx" address "$PUB" 2>/dev/null || echo unknown)
   WANT=$(printf '%s' "$ADDRESS" | tr 'A-F' 'a-f')
   if [ "$WHO" != "$WANT" ]; then
     say "      ${R}The key in your Enclave belongs to a different wallet${N} ($(short "$WHO")), not $(short "$ADDRESS")."
-    say "      A payment signed with it would come from that other wallet, so the kit sends nothing."
+    say "      A transfer signed with it would come from that other wallet, so the kit sends nothing."
     say "      Store the private key of $(short "$ADDRESS") again:  ${C}$EK secret remove $KEY${N}   then   ${C}./open.sh${N}"
     stop_walk
   fi
   ok "Signed by the Enclave. The signature belongs to your wallet, $(short "$ADDRESS")."
-  OUT=$("$HERE/bin/tx" assemble "$HERE/pay.json" "$SIG" "$RID_") || { say "      ${R}The signed payment could not be assembled.${N}"; stop_walk; }
+  OUT=$("$HERE/bin/tx" assemble "$HERE/transfer.json" "$SIG" "$RID_") || { say "      ${R}The signed transfer could not be assembled.${N}"; stop_walk; }
   RAW=$(printf '%s' "$OUT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["raw_tx"])')
   TX_HASH=$(printf '%s' "$OUT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["hash"])')
   save_state
 }
 
-# Send the signed payment. The SAME signed payment may be sent any number of times: it carries its
-# payment number, so the network takes it once and refuses every copy. That is why a busy service
+# Send the signed transfer. The SAME signed transfer may be sent any number of times: it carries its
+# transfer number, so the network takes it once and refuses every copy. That is why a busy service
 # or a lost answer is retried with the same bytes, and never signed again.
 send_payment() {
   TRY=0
   while :; do
     TRY=$((TRY + 1))
-    busy "Sending your payment to the network" "$EK plan run $SND_VER --input raw_tx=$RAW"
+    busy "Sending your transfer to the network" "$EK plan run $SND_VER --input raw_tx=$RAW"
     if plan_completed; then
       ANS=$("$HERE/bin/wallet" sent "$(out_path)" 2>/dev/null || echo "error=unreadable")
       case "$ANS" in
-        result=*) TX_OUTCOME=sent; save_state; ok "The network took the payment."; return 0 ;;
-        *"already known"*|*"nonce too low"*) TX_OUTCOME=sent; save_state; ok "The network already has this payment."; return 0 ;;
-        *) say "      ${R}The network refused the payment:${N} ${ANS#error=}"
+        result=*) TX_OUTCOME=sent; save_state; ok "The network took the transfer."; return 0 ;;
+        *"already known"*|*"nonce too low"*) TX_OUTCOME=sent; save_state; ok "The network already has this transfer."; return 0 ;;
+        *) say "      ${R}The network refused the transfer:${N} ${ANS#error=}"
            case "$ANS" in *[Ii]nsufficient*) say "      Your wallet does not hold enough test ETH for it. Get more, free:  ${C}$FAUCET${N}" ;; esac
            TX_OUTCOME=refused; save_state; stop_walk ;;
       esac
     fi
     if grep -qE "answered 429|Too many requests" "$OUTF" && [ "$TRY" -lt 4 ]; then
       say "      ${Y}The Sepolia service is busy right now.${N} Its free tier takes only a few sends every few"
-      say "      minutes. Nothing was sent. Sending again is safe: it is the same signed payment."
+      say "      minutes. Nothing was sent. Sending again is safe: it is the same signed transfer."
       wait_enter "Wait a minute, then press Enter to send it again."
       continue
     fi
-    say "      ${Y}No clear answer.${N} The kit looks the payment up by its hash instead of guessing:"
+    say "      ${Y}No clear answer.${N} The kit looks the transfer up by its hash instead of guessing:"
     lookup_payment 3
     [ "$PAY_STATE" != pending ] && [ "$PAY_STATE" != unknown ] && { TX_OUTCOME=sent; save_state; return 0; }
     say "      ${R}Still not clear.${N} Nothing more is sent. Look it up yourself:  ${C}$EXPLORER/tx/$TX_HASH${N}"
@@ -308,7 +332,7 @@ send_payment() {
   done
 }
 
-# Look the payment up by its hash until the network names a final status. Sets PAY_STATE
+# Look the transfer up by its hash until the network names a final status. Sets PAY_STATE
 # (ok | error | pending | unknown) and PAY_FEE (wei).
 lookup_payment() {  # tries
   "$HERE/bin/write-plans" lookup "$HERE" "$AGENT" "$AINST" "$API_ROW" "$TX_HASH" >/dev/null
@@ -330,23 +354,28 @@ lookup_payment() {  # tries
 why() {
 head_ "Questions people ask at this point, and how to check the answer yourself"
 say "  ${B}What gets set up in my organization?${N} One catalog entry, ${B}$API_ROW${N}: read your wallet"
-say "  and send a payment that is already signed. One agent, ${B}$AGENT${N}, and its plans, as files here."
-say "  Three standing permissions: read the network, send an already-signed payment, ask the AI."
+say "  and send a transfer that is already signed. One agent, ${B}$AGENT${N}, and its plans, as files here."
+say "  Three standing permissions: read the network, send an already-signed transfer, ask the AI."
 say "  ${B}None of them can sign.${N} Only you can allow that, in step 2."
 cmd "$EK gate grant list --agent $AGENT"
 say "  ${B}Where is my private key?${N} Encrypted in your Enclave's vault on this computer. The Enclave"
 say "  signs with it and never hands it out: there is no command that reads it back."
 cmd "$EK secret list"
 say "  ${B}What exactly did the AI see?${N} The file ${B}prompt.txt${N} in this folder, and nothing else:"
-say "  the rule, the invoice, your approved list and your balance. EKKA's control plane is sent it"
+say "  your rule, your balance, your savings wallet and the amount. EKKA's control plane is sent it"
 say "  to decide yes or no, and the AI gate carries it to the model, a third party, not EKKA."
-say "  ${B}Can a strange answer pay?${N} No. Only the exact words pay or hold cross to EKKA, and only"
-say "  pay leads to the signing step. Anything else goes to the plan's default, which fails."
+say "  ${B}Can a strange answer move money?${N} No. Only the exact words transfer or hold cross to EKKA,"
+say "  and only transfer leads to the signing step. Anything else goes to the plan's default, which"
+say "  fails. The amount and the address are the kit's, worked out before the AI is asked: the AI"
+say "  never names either, so no answer of its can send more, or send it somewhere else."
 cmd "cat wallet.decide.json"
-say "  ${B}What does the sign permission NOT limit?${N} EKKA sees a 32-byte fingerprint, not the payee or"
-say "  the amount. While the permission lasts, the agent may sign ANY payment with this key."
+say "  ${B}What does the sign permission NOT limit?${N} Where the transfer goes, or how much. It checks who"
+say "  may sign and for how long. When the Enclave signs, EKKA sees only a 32-byte fingerprint of"
+say "  what is signed, never your key. While the permission lasts, the agent may sign ANY transfer"
+say "  with this key, to anyone, any amount. The kit sets the address and the amount; EKKA saw both"
+say "  in the message to the AI, but the permission itself does not restrict them."
 say "  That is why you choose how many minutes, and why the kit takes it back in step 3."
-say "  ${B}Could it reach real money?${N} No. The kit builds payments for the Sepolia test network only"
+say "  ${B}Could it reach real money?${N} No. The kit builds transfers for the Sepolia test network only"
 say "  (network id $CHAIN_ID). A Sepolia signature is refused on every other network."
 say "  ${B}Is the record real?${N} Each governed step produces signed evidence binding the authorized scope"
 say "  to hashes of its input and output. Check it on this computer:"
@@ -358,18 +387,18 @@ head_ "Operator commands: keep administration with the human"
 say "  These use your session. They are not a restricted AI execution interface."
 cmd "$EK gate grant list --agent $AGENT"
 cmd "$EK plan run $BAL_VER"
-say ""; say "      ${C}$EK plan run $DEC_VER \\${N}"; say "      ${C}    --input user_message=@prompt.txt --input digest=\$(bin/tx digest pay.json)${N}"
+say ""; say "      ${C}$EK plan run $DEC_VER \\${N}"; say "      ${C}    --input user_message=@prompt.txt --input digest=\$(bin/tx digest transfer.json)${N}"
 say ""; say "      ${C}$EK gate grant add --agent $AGENT --type secret --instance $SINST \\${N}"
 say "      ${C}    --resource keys/$KEY --capability secret.vault.sign \\${N}"
 say "      ${C}    --ttl 600 --no-fingerprint${N}"; say ""
-cmd "$EK plan run $SIG_VER --input digest=\$(bin/tx digest pay.json)"
+cmd "$EK plan run $SIG_VER --input digest=\$(bin/tx digest transfer.json)"
 cmd "$EK receipts verify"
 say "  ${B}To let an AI run these plans and nothing else${N}: publish the plans and give the AI the session"
 say "  of an organization ${B}member${N}. A member may dispatch plans and may NOT issue or revoke a grant."
 cmd "$EK org members invite ai-operator@example.com --role member"
 }
 
-# ⛔ AN UNRESOLVED ATTEMPT IS NEVER REPLAYED. A sign permission may still exist, or a payment was
+# ⛔ AN UNRESOLVED ATTEMPT IS NEVER REPLAYED. A sign permission may still exist, or a transfer was
 # signed and its fate is not known: then every mode inspects, and nothing is signed again.
 unresolved_attempt() {
   [ -n "${SIGN_INTENT:-}" ] && return 0
@@ -378,47 +407,51 @@ unresolved_attempt() {
 }
 recover() {
   head_ "Inspect the saved attempt; do not sign it again"
-  [ -n "${TX_HASH:-}" ] && say "  The last signed payment: ${C}$EXPLORER/tx/$TX_HASH${N}"
-  say "  Sending that same payment again is safe (it can be taken once), signing a new one is not done here."
+  [ -n "${TX_HASH:-}" ] && say "  The last signed transfer: ${C}$EXPLORER/tx/$TX_HASH${N}"
+  say "  Sending that same transfer again is safe (it can be taken once), signing a new one is not done here."
   [ -n "${SIGN_GRANT_ID:-}" ] && { say "  A sign permission may still be live. Take it back:"; cmd "$EK gate grant revoke $SIGN_GRANT_ID"; }
   cmd "$EK gate grant list --agent $AGENT"
   say "  When no sign permission is left, run ${C}./open.sh steps${N} again. To start over:  ${C}rm .demo-state${N}"
 }
 
 # ================================================================ the four steps
-# The AI is asked ONCE. Its recorded pay is then governed three times: refused without
+# The AI is asked ONCE. Its recorded transfer is then governed three times: refused without
 # permission, signed and sent with it, refused again after the permission is taken back.
 steps() {
 save_state
 vw set model_where "the AI gate $LLM, carrying the message to $MODEL, a third party, not EKKA"
 vw set exec_where "your Enclave: signing with keys/$KEY, sending through $API_ROW"
-vw set wallet "$ADDRESS"; vw set payee "$PAYEE"
-vw authority network_read "granted"; vw authority send "granted (only an already-signed payment)"; vw authority sign "not granted"
+vw set wallet "$ADDRESS"; vw set savings "$SAVINGS"
+vw authority network_read "granted"; vw authority send "granted (only an already-signed transfer)"; vw authority sign "not granted"
 say ""
 say "  Four steps. Each one shows what it runs, waits for you to press Enter, runs it, and says"
 say "  what happened. ${B}q${N} stops at any point."
 
-# ---- 1. The AI decides, and tries to pay
-say ""; say "  ${Y}▶ Step 1 of 4. The AI reads the invoice, decides, and tries to pay.${N}"
-say "      You have not given it permission to sign yet, so EKKA should stop the payment."
+# ---- 1. The AI decides, and tries to move the extra
+say ""; say "  ${Y}▶ Step 1 of 4. The AI checks your wallet, decides, and tries to move the extra.${N}"
+say "      You have not given it permission to sign yet, so EKKA should stop the transfer."
 wait_enter "Enter reads your balance."
 read_plan "Reading your balance" "$BAL_VER"
 funds_check "$P"
-ok "Your wallet holds ${B}$BAL_ETH test ETH${N}. Read from the network just now."
+ok "Your everyday wallet holds ${B}$BAL_ETH test ETH${N}. Read from the network just now."
 build_payment
 python3 - "$HERE/inputs.json" <<EOF
-import json; json.dump({"amount_eth": "$AMOUNT_ETH", "payee": "$PAYEE", "for": "September API credits",
-  "approved": ["$PAYEE"], "balance_eth": "$BAL_ETH", "fee_cap_eth": "$(eth_of "$FEE_CAP_WEI")", "floor_eth": "$FLOOR_ETH"},
+import json; json.dump({"amount_eth": "$AMOUNT_ETH", "savings": "$SAVINGS", "savings_list": ["$SAVINGS"],
+  "balance_eth": "$BAL_ETH", "fee_cap_eth": "$(eth_of "$FEE_CAP_WEI")", "keep_eth": "$KEEP_ETH"},
   open(__import__("sys").argv[1], "w"))
 EOF
 "$HERE/bin/prompt" "$HERE/inputs.json" "$HERE/prompt.txt" >/dev/null
-[ "$PAYEE" = "$ADDRESS" ] && TO_WHO="$(short "$PAYEE"), your own address" || TO_WHO="$(short "$PAYEE")"
+[ "$SAVINGS" = "$ADDRESS" ] && TO_WHO="this same wallet, $(short "$SAVINGS")" || TO_WHO="your savings wallet, $(short "$SAVINGS")"
 say ""
 say "  ${B}What the AI is sent${N}"
-say "    · The invoice: pay $AMOUNT_ETH test ETH to $TO_WHO, for September API credits."
-say "    · Your rule: pay only if the payee is on your list and at least $FLOOR_ETH test ETH is left."
-say "    · Your balance now: $BAL_ETH test ETH. Your approved list: $(short "$PAYEE")."
-say "    Nothing else: not your private key, not your other payments."
+say "    · Your rule: when your everyday wallet holds more than $KEEP_ETH test ETH, move the extra to savings."
+if [ "$SAVINGS" = "$ADDRESS" ]; then SAV_LINE="this same wallet (you gave no second one)"; else SAV_LINE="$(short "$SAVINGS"), on your list"; fi
+say "    · Your balance now: $BAL_ETH test ETH. Your savings wallet: $SAV_LINE."
+say "    · The transfer the kit prepared: $AMOUNT_ETH test ETH to savings, leaving at least $KEEP_ETH."
+say "    Nothing else: not your private key, not your other transfers."
+say ""
+say "  ${B}The AI decides only yes or no.${N} The kit worked out the amount and the address before asking,"
+say "  so no answer from the AI can send more, or send it somewhere else."
 say ""
 say "  ${B}You control this message.${N} Change the rule in ${C}bin/prompt${N}. EKKA's AI gate carries it to"
 say "  the AI, and EKKA keeps a copy with the run, so you can see later exactly what the AI was told."
@@ -434,10 +467,10 @@ runs "$DEC_CMD"
 busy "Asking the AI" "$DEC_CMD"
 read_verdict
 case "$DECISION" in
-  hold) say "      So nothing is signed: only a pay leads to the signing step. Change the invoice or the"
-        say "      rule in ${C}bin/prompt${N}, then ${C}./open.sh steps${N}."
+  hold) say "      So nothing is signed: only a transfer leads to the signing step. Change the rule in"
+        say "      ${C}bin/prompt${N}, then ${C}./open.sh steps${N}."
         vw event "1. The AI decides" "AI decision (hold)" "decide" "nothing to sign" "not sent"; stop_walk ;;
-  invalid_model_output) say "      So nothing can be signed: only a clear pay can lead to a signature."
+  invalid_model_output) say "      So nothing can be signed: only a clear transfer can lead to a signature."
         say "      Ask again with ${C}./open.sh steps${N}."
         vw event "1. The AI decides" "AI answer unclear" "decide" "no signature" "not sent"; stop_walk ;;
 esac
@@ -448,17 +481,18 @@ if plan_completed; then
   stop_walk
 fi
 refused_by_ekka || { explain_failure; stop_walk; }
-say "      ${G}${B}EKKA stopped the payment.${N} Your AI agent has no permission to sign, so the Enclave did not"
+say "      ${G}${B}EKKA stopped the transfer.${N} Your AI agent has no permission to sign, so the Enclave did not"
 say "      sign and nothing was sent."
-say "      ${B}See it yourself:${N} no new payment is on your wallet's page:"
+say "      ${B}See it yourself:${N} nothing new is on your wallet's page:"
 say "      ${C}$EXPLORER/address/$ADDRESS${N}"
-vw event "1. The AI decides, and is stopped" "AI decision (pay)" "sign the payment" "refused: no permission" "not sent"
+vw event "1. The AI decides, and is stopped" "AI decision (transfer)" "sign the transfer" "refused: no permission" "not sent"
 vw render
 
-# ---- 2. You give permission; the AI's payment goes through
+# ---- 2. You give permission; the AI's transfer goes through
 say ""; say "  ${Y}▶ Step 2 of 4. You give the AI permission to sign, for as long as you choose.${N}"
-say "      EKKA sees only a fingerprint of what is signed, not who is paid or how much. So while the"
-say "      permission lasts, your AI agent may sign ANY payment with this key, not only this one."
+say "      The signing permission checks who may sign and for how long. It does not restrict the"
+say "      transfer's destination or amount. So while it lasts, your AI agent may sign ANY transfer"
+say "      with this key, to anyone, any amount, not only this one."
 say "      That is why you choose how long it lasts. It ends by itself then."
 MINUTES=${PERMIT_MINUTES:-}
 while ! printf '%s' "$MINUTES" | grep -qE '^[1-9][0-9]{0,3}$' || [ "$MINUTES" -gt 1440 ]; do
@@ -477,12 +511,12 @@ SIGN_GRANT_ID=$(grep -oE 'revoke +[0-9a-f-]{16,}' "$OUTF" | head -1 | awk '{prin
 save_state
 vw authority sign "granted for $PERMIT"
 ok "Permission given, for $PERMIT."
-say "      Now the AI's payment from step 1 goes to EKKA again, as the same payment:"
+say "      Now the AI's transfer from step 1 goes to EKKA again, as the same transfer:"
 say "      $AMOUNT_ETH test ETH to $TO_WHO."
 say "      The AI is not asked again. Its decision stands; only your permission changed."
 SIG_CMD="$EK plan run $SIG_VER --input digest=$DIGEST"
 runs "$SIG_CMD"
-wait_enter "Enter signs and sends the payment."
+wait_enter "Enter signs and sends the transfer."
 busy "The Enclave is signing" "$SIG_CMD"
 if ! plan_completed; then
   if refused_by_ekka; then
@@ -498,27 +532,29 @@ lookup_payment "${LOOKUP_TRIES:-24}"
 case "$PAY_STATE" in
   ok)   FEE_ETH=$(eth_of "$PAY_FEE")
         ok "The network confirmed it: $AMOUNT_ETH test ETH to $TO_WHO."
-        say "      ${B}See it yourself:${N} it is the newest payment on your wallet's page:"
+        say "      ${B}See it yourself:${N} it is the newest transfer on your wallet's page:"
         say "      ${C}$EXPLORER/address/$ADDRESS${N}"
         say "      Its hash begins $(printf '%s' "$TX_HASH" | cut -c1-12). The full link is on the evidence page."
-        if [ "$PAYEE" = "$ADDRESS" ]; then
+        if [ "$SAVINGS" = "$ADDRESS" ]; then
           say "      Why your balance dropped a little: the network charged a fee of ${B}$FEE_ETH test ETH${N} to carry"
-          say "      it. The $AMOUNT_ETH came back to you, because the example pays you back. Test ETH has no value."
+          say "      it. The $AMOUNT_ETH came back to this same wallet, because you gave no savings wallet."
         else
-          say "      It cost a network fee of ${B}$FEE_ETH test ETH${N}, on top of the $AMOUNT_ETH. Test ETH has no value."
-        fi ;;
-  error) say "      ${R}The network took the payment and it failed there.${N} Your wallet's page says why:"
+          say "      The network charged a fee of ${B}$FEE_ETH test ETH${N} to carry it. Your everyday wallet keeps at"
+          say "      least $KEEP_ETH, as your rule says."
+        fi
+        say "      Test ETH has no value." ;;
+  error) say "      ${R}The network took the transfer and it failed there.${N} Your wallet's page says why:"
          say "      ${C}$EXPLORER/address/$ADDRESS${N}" ;;
   *)    say "      ${Y}The network has not confirmed it yet.${N} It usually takes about 15 seconds. Watch it:"
         say "      ${C}$EXPLORER/address/$ADDRESS${N}" ;;
 esac
 vw set tx "$TX_HASH"; vw set tx_status "$PAY_STATE"
-vw event "2. Permission given" "AI decision (pay)" "sign, then send" "allowed ($PERMIT)" "$PAY_STATE"
+vw event "2. Permission given" "AI decision (transfer)" "sign, then send" "allowed ($PERMIT)" "$PAY_STATE"
 vw render
 
 # ---- 3. Take the permission back
 say ""; say "  ${Y}▶ Step 3 of 4. Take the permission back.${N}"
-say "      There is nothing to cancel: a confirmed payment is final. So take the permission back as"
+say "      There is nothing to cancel: a confirmed transfer is final. So take the permission back as"
 say "      soon as it has done its one job. You do not have to wait for your $PERMIT to run out."
 [ -n "${SIGN_GRANT_ID:-}" ] || { cmd "$EK gate grant list --agent $AGENT"; stop "The permission's id could not be read, so it cannot be taken back for you." "Take the kit's secret.vault.sign grant back by hand, then ./open.sh steps"; }
 runs "$EK gate grant revoke $SIGN_GRANT_ID"
@@ -531,20 +567,20 @@ vw authority sign "revoked"
 vw event "3. Take it back" "you" "take the permission back" "taken back" "final"
 vw render
 
-# ---- 4. The same payment again: stopped
-say ""; say "  ${Y}▶ Step 4 of 4. The AI's payment once more, after you took the permission back.${N}"
-say "      The same payment, as a brand-new one (the next payment number). EKKA should stop it."
+# ---- 4. The same transfer again: stopped
+say ""; say "  ${Y}▶ Step 4 of 4. The AI's transfer once more, after you took the permission back.${N}"
+say "      The same transfer, as a brand-new one (the next transfer number). EKKA should stop it."
 build_payment $((NONCE + 1))
 AGAIN_CMD="$EK plan run $SIG_VER --input digest=$DIGEST"
 runs "$AGAIN_CMD"
-wait_enter "Enter sends the payment."
+wait_enter "Enter sends the transfer."
 busy "The Enclave is asked to sign" "$AGAIN_CMD"
 if refused_by_ekka; then
   ok "EKKA stopped it. The permission is yours to give, and yours to take back."
-  # ⛔ SAY ONLY WHAT THE PAGE WILL SHOW (ekka-ai/ekka-kits#45). A wallet that has been paid
-  # or has paid before lists every one of those payments, so "only the one" was false for
-  # anyone but a brand-new wallet. What the kit can prove: the newest is still step 2's.
-  say "      ${B}See it yourself:${N} the newest payment on your wallet's page is still the one from step 2"
+  # ⛔ SAY ONLY WHAT THE PAGE WILL SHOW (ekka-ai/ekka-kits#45). A wallet that has sent or received
+  # before lists every one of those transfers, so "only the one" was false for anyone but a
+  # brand-new wallet. What the kit can prove: the newest is still step 2's.
+  say "      ${B}See it yourself:${N} the newest transfer on your wallet's page is still the one from step 2"
   say "      (its hash begins $(printf '%s' "$TX_HASH" | cut -c1-12)). Nothing new was sent:"
   say "      ${C}$EXPLORER/address/$ADDRESS${N}"
 elif plan_completed; then
@@ -554,7 +590,7 @@ elif plan_completed; then
 else
   explain_failure; stop_walk
 fi
-vw event "4. Once more, no permission" "AI decision (pay), new payment" "sign the payment" "refused: permission taken back" "not sent"
+vw event "4. Once more, no permission" "AI decision (transfer), new transfer" "sign the transfer" "refused: permission taken back" "not sent"
 
 # ---- the record
 say ""; say "  ${Y}▶ The record.${N} While you watched, EKKA wrote down every step on this computer: what the AI"
@@ -575,30 +611,33 @@ fi
 vw render
 head_ "What just happened"
 case "$PAY_STATE" in ok) GONE="the network confirmed it" ;; error) GONE="the network took it and it failed" ;; *) GONE="the network took it" ;; esac
-say "  1. The AI decided to ${B}pay${N}. It had no permission, so ${B}EKKA stopped the signature.${N}"
-say "  2. You allowed it for $PERMIT. The same payment was signed, and $GONE."
+say "  1. The AI decided to ${B}transfer${N} the extra. It had no permission, so ${B}EKKA stopped the signature.${N}"
+say "  2. You allowed it for $PERMIT. The same transfer was signed, and $GONE."
 say "  3. You took the permission back."
-say "  4. The same payment once more: ${B}EKKA stopped it.${N}"
+say "  4. The same transfer once more: ${B}EKKA stopped it.${N}"
 say ""
 if [ "$VERIFY_RC" = 0 ]; then
 say "  ${B}Trust${N}      Every step was written down and signed on this computer, and the record checks out."
 else
 say "  ${B}Trust${N}      ${R}The record did not check out,${N} so this walk is not proven. See above."
 fi
-say "  ${B}Security${N}   The AI's payment was signed only while you allowed it."
+say "  ${B}Security${N}   The AI's transfer was signed only while you allowed it."
 say "             Before and after, EKKA stopped it."
 say "  ${B}Privacy${N}    Your private key stayed in the Enclave on this computer, which signed with it."
-say "             ${B}EKKA NEVER SAW YOUR PRIVATE KEY.${N} To decide yes or no, EKKA's control plane was sent"
-say "             the message to the AI and the payment's fingerprint, then the signed payment, which"
-say "             is public on the network once it is sent."
+say "             EKKA and the AI could only ask it to sign, and only while you allowed that."
+say "             ${B}YOUR PRIVATE KEY NEVER LEFT THIS COMPUTER.${N} To decide yes or no, EKKA's control plane"
+say "             was sent the message to the AI, which names the amount and the savings wallet. When your"
+say "             Enclave signed, EKKA saw only a fingerprint of what was signed, never your key. Then the"
+say "             signed transfer, which is public on the network once it is sent."
 say "             The AI gate carried the message to the model, a third party, not EKKA."
-say "             It saw only the invoice, your rule, your list and your balance. Never your key."
+say "             It saw only your rule, your balance, your savings wallet and the amount. Never your key."
 say "             ${B}Want your own model instead?${N} Add its API to your catalog the same way this kit added"
 say "             the Sepolia network. Then the message goes to your model, not a third party's."
 say ""
-say "  ${B}Good to know:${N} while a sign permission lasts, the agent may sign ANY payment with this key."
-say "  EKKA checks who may sign and for how long, not who is paid or how much. Your rule and this kit"
-say "  check those. Taking the permission back stops new signatures; a payment already sent is final."
+say "  ${B}Good to know:${N} while a sign permission lasts, the agent may sign ANY transfer with this key."
+say "  The signing permission checks who may sign and for how long. It does not restrict the transfer's"
+say "  destination or amount: the kit sets both, never the AI. Revoking permission prevents new"
+say "  signatures. It cannot invalidate a signature already created or undo a confirmed transfer."
 say ""
 say "  ${B}Next${N}"
 say "    See everything on one page     ${C}open .view/view.html${N}"
@@ -613,6 +652,15 @@ say ""
 case "$MODE" in steps|setup) take_lock; trace "walk starts: $MODE" ;; esac
 if [ -f "$STATE" ]; then
   . "$STATE"
+  # ⛔ A FOLDER SET UP BY KIT 2 (an invoice, the words pay or hold) IS SET UP AGAIN. Its saved plans
+  # would still say pay, which this kit's steps never accept. An open attempt is inspected first.
+  SAVINGS=${SAVINGS:-${PAYEE:-}}
+  if [ "${KIT_MAJOR:-2}" != 3 ] && ! unresolved_attempt; then
+    case "$MODE" in steps|setup) say ""; say "  This folder was set up by an earlier version of the kit, so it is set up again."
+                                 rm -f "$STATE"; MODE=setup ;; esac
+  fi
+fi
+if [ -f "$STATE" ]; then
   case "$MODE" in
     why) why ;;
     commands) commands ;;
@@ -629,13 +677,13 @@ if [ "$MODE" != setup ]; then stop "No saved Kit setup exists." "Run ./open.sh f
 
 # ================================================================ setup
 command -v "$EKKA" >/dev/null 2>&1 || stop "EKKA is not installed." "Install it with the line in your email, then: ekka login --email you@example.com"
-command -v python3 >/dev/null 2>&1 || stop "This machine is missing python3." "The kit builds the payment with it. On Debian or Ubuntu: apt-get install -y python3"
+command -v python3 >/dev/null 2>&1 || stop "This machine is missing python3." "The kit builds the transfer with it. On Debian or Ubuntu: apt-get install -y python3"
 # ⛔ 0.1.88: this kit catalogues its row in the person's OWN organization (`apis/<org>/eth-sepolia`),
 # which an Enclave before 0.1.88 refuses with API_NAME_INVALID. The sign op has been there since 0.1.87.
 FLOOR=0.1.88; KIT_VERSION=$(cat "$HERE/VERSION" 2>/dev/null || echo dev)
 HAVE=$(run --version 2>/dev/null | awk 'NR==1{print $2}')
 [ "$(printf '%s\n%s\n' "$FLOOR" "$HAVE" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" = "$FLOOR" ] || stop "This kit needs EKKA $FLOOR or later; you have ${HAVE:-an unknown version}." "Run the install line again, then open a new terminal window."
-"$HERE/bin/tx" selftest >/dev/null 2>&1 || stop "This kit's payment builder failed its own tests." "Nothing was changed. Report it with: bin/tx selftest"
+"$HERE/bin/tx" selftest >/dev/null 2>&1 || stop "This kit's transfer builder failed its own tests." "Nothing was changed. Report it with: bin/tx selftest"
 run secret list >/dev/null 2>&1 || stop "Your Enclave is not running." "In your other window: ekka enclave start <id>"
 GATES=$(run gate list 2>/dev/null || true)
 # ⛔ THIS MACHINE'S Enclave, never the first one listed (measured 2026-09-24 on the Financial Kit).
@@ -653,27 +701,30 @@ API_ROW="$ORG/$ROW"
 HAVE_KEY=0; run secret list 2>/dev/null | grep -q "$KEY" && HAVE_KEY=1
 
 [ -t 1 ] && clear 2>/dev/null || true
-head_ "Let an AI pay for you. You decide what it may do."
-say "  An invoice arrives. An AI checks it against your rule and decides whether to pay."
-say "  You give it permission to sign, for as long as you choose, and its payment goes through."
+head_ "Let an AI move your crypto. It never sees your private key, and neither does EKKA."
+say "  Your everyday wallet holds more than it needs. An AI checks it against your rule and decides"
+say "  whether to move the extra to your savings wallet."
+say "  You give it permission to sign, for as long as you choose, and its transfer goes through."
 say "  Take the permission back whenever you want, and it stops."
 say ""
 say "  ${B}Trust${N}      Every action is recorded and signed, so you can prove what happened."
 say "  ${B}Security${N}   The AI can do only what you allowed, and only for as long as you allowed it."
 say "  ${B}Privacy${N}    Your wallet's private key stays in the Enclave on this computer, which signs with it."
-say "             ${B}EKKA NEVER SEES YOUR PRIVATE KEY.${N} Neither does the AI, a third-party model, not EKKA."
-say "             To decide yes or no, EKKA's control plane is sent the message to the AI and the"
-say "             payment's fingerprint, then the signed payment, which is public once it is sent."
+say "             ${B}YOUR PRIVATE KEY NEVER LEAVES THIS COMPUTER.${N} Not to EKKA, not to the AI."
+say "             They can only ask your Enclave to sign with it, and only while you allow that."
+say "             To decide yes or no, EKKA's control plane is sent the message to the AI, which names"
+say "             the amount and the savings wallet. When your Enclave signs, EKKA sees only a"
+say "             fingerprint of what is signed. Then the signed transfer, public once it is sent."
 say "             The AI gate carries the message to the model, a third party, not EKKA."
 say ""
 say "  ${B}Safe to try${N}"
 say "    · The Sepolia test network only. Test ETH is free and has no value. No real money."
 say "    · Your key stays on this computer, encrypted. Use a wallet you made for this."
 say "    · Nothing is signed unless you have given permission."
-say "    · The payment rule is an example, not advice."
+say "    · The transfer rule is an example, not advice."
 say ""
-say "  ${B}You need${N} a test wallet with a little test ETH. How to make one in MetaMask and fill it,"
-say "  two minutes: ${C}$WALLET_HELP${N}"
+say "  ${B}You need${N} a test wallet with a little test ETH, and a second account for savings. How to make"
+say "  both in MetaMask and fill the first, two minutes: ${C}$WALLET_HELP${N}"
 say ""
 say "  ${D}What gets set up, in detail:  ./open.sh why        kit $KIT_VERSION, EKKA $HAVE${N}"
 say ""
@@ -684,7 +735,8 @@ head_ "Setting up"
 
 # ---------------- ⛔ THE ONLY BLOCK THAT TOUCHES YOUR KEY ----------------
 if [ "$HAVE_KEY" = 1 ]; then
-  ok "Your key is already stored on this computer, as ${B}$KEY${N}."
+  ok "Your key is already stored on this computer, as ${B}$KEY${N}. The AI cannot see it, and neither can EKKA."
+  say "    They can only ask your Enclave to sign with it, and only while you allow that."
 else
   say "  In MetaMask: the account's ${B}three dots${N}, ${B}Account details${N}, ${B}Show private key${N}."
   say "  Paste it below. It stays hidden while you paste. ${Y}Use a wallet you made for this.${N}"
@@ -703,11 +755,14 @@ else
   done
   printf '%s' "$K" | run secret put "$KEY" --stdin >/dev/null 2>&1 || { K=""; stop "The Enclave did not store the key." "Is it running? In your other window: ekka enclave start <id>"; }
   K=""
+  # ⛔ SEE versus USE (owner, 2026-09-26: "Even they cant see it. they can only use it. its
+  # important thing to mention."). Both lines, every time the key is mentioned at setup.
   ok "Your key is stored on this computer, encrypted. The AI cannot see it, and neither can EKKA."
+  say "    They can only ask your Enclave to sign with it, and only while you allow that."
 fi
 # ---------------- end of the block that touches your key ----------------
 
-say "  Now your wallet's ${B}address${N}, the public half: 0x and 40 characters. It is public on purpose."
+say "  Now this wallet's ${B}address${N}, the public half: 0x and 40 characters. It is public on purpose."
 TRIES=0
 while :; do
   ask "Your wallet address:"
@@ -720,13 +775,20 @@ while :; do
   TRIES=$((TRIES+1)); [ "$TRIES" -ge 3 ] && stop "Three tries. Nothing was changed." "Copy the address from MetaMask, then ./open.sh again."
 done
 ADDRESS=$(printf '%s' "$ADDRESS" | tr 'A-F' 'a-f')
-say "  The invoice in this walk pays $AMOUNT_ETH test ETH. By default it pays ${B}you back${N}, so only the"
-say "  network fee is spent. Or type another address to pay."
+say "  Now your ${B}savings${N} wallet: where the extra goes. In MetaMask, ${B}Add account${N} makes one; copy its"
+say "  address. No second account? Press Enter: the extra goes back to this same wallet, and only the"
+say "  network fee is spent."
+TRIES=0
 while :; do
-  ask "Who does the invoice pay? Enter pays you back:"
-  PAYEE=$(printf '%s' "${REPLY:-$ADDRESS}" | tr -d ' \r\t' | tr 'A-F' 'a-f')
-  printf '%s' "$PAYEE" | grep -qE '^0x[0-9a-f]{40}$' && break
+  ask "Your savings wallet address (Enter: this same wallet):"
+  SAVINGS=$(printf '%s' "${REPLY:-$ADDRESS}" | tr -d ' \r\t')
+  if printf '%s' "$SAVINGS" | grep -qE '^(0x)?[0-9a-fA-F]{64}$'; then
+    SAVINGS=""; stop "That is a PRIVATE key, and it was just shown on this screen. Treat that wallet as burned." "Make a new account in MetaMask, then run ./open.sh again and paste its ADDRESS here."
+  fi
+  SAVINGS=$(printf '%s' "$SAVINGS" | tr 'A-F' 'a-f')
+  printf '%s' "$SAVINGS" | grep -qE '^0x[0-9a-f]{40}$' && break
   say "  ${R}That does not look like an address${N} (0x and 40 characters)."
+  TRIES=$((TRIES+1)); [ "$TRIES" -ge 3 ] && stop "Three tries. Nothing was changed." "Copy the savings address from MetaMask, then ./open.sh again."
 done
 
 # ---- the hosted model gate, when the org has not registered it
@@ -792,11 +854,11 @@ create_plan() {  # file code -> sets V
 }
 "$HERE/bin/write-plans" "$HERE" "$AGENT" "$AINST" "$LLM" "$API_ROW" "$MODEL" "$KEY" "$ADDRESS" >/dev/null
 item_start "Saved its plan: read your balance";                    create_plan "$HERE/wallet.balance.json" wallet.balance; BAL_VER=$V; item_done
-item_start "Saved its plan: read the payments you have sent";      create_plan "$HERE/wallet.sent.json" wallet.sent; SNT_VER=$V; item_done
+item_start "Saved its plan: read the transfers you have sent";     create_plan "$HERE/wallet.sent.json" wallet.sent; SNT_VER=$V; item_done
 item_start "Saved its plan: read the network's fees";              create_plan "$HERE/wallet.fees.json" wallet.fees; FEE_VER=$V; item_done
-item_start "Saved its plan: decide whether to pay, then sign";     create_plan "$HERE/wallet.decide.json" wallet.decide; DEC_VER=$V; item_done
+item_start "Saved its plan: decide whether to move the extra, then sign"; create_plan "$HERE/wallet.decide.json" wallet.decide; DEC_VER=$V; item_done
 item_start "Saved its plan: sign its decision again";              create_plan "$HERE/wallet.sign.json" wallet.sign; SIG_VER=$V; item_done
-item_start "Saved its plan: send a payment that is already signed"; create_plan "$HERE/wallet.send.json" wallet.send; SND_VER=$V; item_done
+item_start "Saved its plan: send a transfer that is already signed"; create_plan "$HERE/wallet.send.json" wallet.send; SND_VER=$V; item_done
 
 grant() {  # label type instance resource capability words
   item_start "$1"; shift
@@ -805,12 +867,12 @@ grant() {  # label type instance resource capability words
   item_done
 }
 grant "Allowed it to read the Sepolia network"              api "$AINST" "apis/$API_ROW" api.read --no-fingerprint
-grant "Allowed it to send a payment that is already signed" api "$AINST" "apis/$API_ROW" api.write --no-fingerprint
+grant "Allowed it to send a transfer that is already signed" api "$AINST" "apis/$API_ROW" api.write --no-fingerprint
 grant "Allowed it to ask the AI"                            llm "$LLM" "$MODEL" llm.infer ""
 ok "Your AI agent is ready. It may NOT sign. Only you can allow that, in step 2."
 save_state
 
 read_plan "Checking your wallet" "$BAL_VER"
 funds_check "$P"
-ok "Your wallet holds ${B}$BAL_ETH test ETH${N}: enough for the walk."
+ok "Your everyday wallet holds ${B}$BAL_ETH test ETH${N}: enough for the walk."
 steps
