@@ -6,7 +6,7 @@
 #   docker exec -it -u person kitbox bash                            # window 2: you
 #   docker exec -it -u agent kitbox bash                           # window 3: the agent
 #
-# The install link carries your access key, so it is typed inside the running
+# The install command is in your approval email. It is typed inside the running
 # box, never baked into the image.
 
 FROM debian:bookworm-slim
@@ -27,7 +27,7 @@ ENV PATH="/home/person/.local/bin:${PATH}"
 # Leave the install to run time so the token never enters an image layer.
 # Inside the container, run:
 #
-#   curl -fsSL -H "X-Ekka-Key: <key>" https://get.ekka.ai/install.sh | sh
+#   <the install command from your approval email>
 #   export PATH="$HOME/.local/bin:$PATH"
 #   ekka --version                 # must be 0.1.88 or later
 #   ekka login --email you@example.com
