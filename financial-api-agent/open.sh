@@ -166,7 +166,7 @@ explain_failure() {
     say "      your organization (${B}$ORG${N}); it is one command on our side. Then ${C}./open.sh steps${N}"
   elif grep -q "USAGE_CEILING_EXCEEDED" "$OUTF"; then
     # Measured on prod 2026-09-25: a daily run limit answers HTTP 429 as GOVERN_HTTP_ERROR, and was
-    # told as "EKKA did not answer clearly", which sends a person to wait for an outage (#41).
+    # told as "EKKA did not answer clearly", which sends a person to wait for an outage.
     say "      Your organization has used all of today's EKKA runs (its daily limit). Nothing was changed."
     say "      It resets at the start of the next day (UTC), or an admin raises it:  ${C}$EK org limits set${N}"
   elif grep -qE "GOVERN_HTTP_ERROR|50[234]" "$OUTF"; then

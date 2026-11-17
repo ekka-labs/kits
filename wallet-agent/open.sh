@@ -577,7 +577,7 @@ wait_enter "Enter sends the transfer."
 busy "The Enclave is asked to sign" "$AGAIN_CMD"
 if refused_by_ekka; then
   ok "EKKA stopped it. The permission is yours to give, and yours to take back."
-  # ⛔ SAY ONLY WHAT THE PAGE WILL SHOW (ekka-ai/ekka-kits#45). A wallet that has sent or received
+  # ⛔ SAY ONLY WHAT THE PAGE WILL SHOW. A wallet that has sent or received
   # before lists every one of those transfers, so "only the one" was false for anyone but a
   # brand-new wallet. What the kit can prove: the newest is still step 2's.
   say "      ${B}See it yourself:${N} the newest transfer on your wallet's page is still the one from step 2"
